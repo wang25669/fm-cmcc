@@ -3,7 +3,13 @@ name: Build APK
 on:
   push:
     branches: [ main ]
+    tags:
+      - 'v*'
   workflow_dispatch:
+
+# 创建 Release 需要写权限，默认的只读 token 会报 403
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -28,12 +34,14 @@ jobs:
         COMMIT_COUNT=$(git rev-list --count HEAD)
         echo "versionCode=$COMMIT_COUNT" >> $GITHUB_OUTPUT
 
-        # 如果有 tag，用 tag 作为 versionName；否则用 0.0.commitCount
+        # 打了 tag 就用 tag 当版本名（正式版），否则用 0.0.commitCount（自动构建）
         TAG=$(git describe --tags --exact-match 2>/dev/null || echo "")
         if [ -n "$TAG" ]; then
-          VERSION_NAME="${TAG#v}"  # 去掉 v 前缀
+          VERSION_NAME="${TAG#v}"   # 去掉 v 前缀
+          echo "prerelease=false" >> $GITHUB_OUTPUT
         else
           VERSION_NAME="0.0.$COMMIT_COUNT"
+          echo "prerelease=true"  >> $GITHUB_OUTPUT
         fi
         echo "versionName=$VERSION_NAME" >> $GITHUB_OUTPUT
 
@@ -46,14 +54,12 @@ jobs:
         sed -i "s/versionCode [0-9]*/versionCode ${{ steps.version.outputs.versionCode }}/" build.gradle
         sed -i "s/versionName \".*\"/versionName \"${{ steps.version.outputs.versionName }}\"/" build.gradle
         echo "Updated build.gradle:"
-        grep -A2 "versionCode\|versionName" build.gradle
-
-    - name: Grant execute permission for gradlew
-      run: chmod +x FMPlayer/gradlew
+        grep "versionCode\|versionName" build.gradle
 
     - name: Build debug APK
       run: |
         cd FMPlayer
+        chmod +x gradlew
         ./gradlew assembleDebug --stacktrace
 
     - name: Rename APK
@@ -61,9 +67,19 @@ jobs:
         cd FMPlayer/app/build/outputs/apk/debug
         mv app-debug.apk FMPlayer-v${{ steps.version.outputs.versionName }}.apk
 
-    - name: Upload APK
-      uses: actions/upload-artifact@v4
+    # Release 的附件是原样存的，点开就是 .apk，不像 Artifacts 那样强制打包成 zip
+    - name: Publish Release
+      uses: softprops/action-gh-release@v2
       with:
-        name: FMPlayer-v${{ steps.version.outputs.versionName }}
-        path: FMPlayer/app/build/outputs/apk/debug/FMPlayer-v${{ steps.version.outputs.versionName }}.apk
-        retention-days: 30
+        tag_name: v${{ steps.version.outputs.versionName }}
+        name: v${{ steps.version.outputs.versionName }}
+        prerelease: ${{ steps.version.outputs.prerelease }}
+        files: FMPlayer/app/build/outputs/apk/debug/FMPlayer-v${{ steps.version.outputs.versionName }}.apk
+        body: |
+          versionCode `${{ steps.version.outputs.versionCode }}` · versionName `${{ steps.version.outputs.versionName }}`
+
+          下方 **Assets** 里的 `.apk` 直接下载安装。车机需先允许"未知来源应用"。
+
+          首次安装后打开 App → 右上角设置 → 填后端地址（如 `http://192.168.123.178:3000`）。
+
+          提交：${{ github.sha }}

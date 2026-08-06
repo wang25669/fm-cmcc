@@ -58,7 +58,8 @@
 
 1. **下载 APK**
    - 从 [Releases](https://github.com/wang25669/fm-cmcc/releases) 下载最新版本
-   - 或通过 GitHub Actions 自动编译的构建产物
+   - 点开一条 Release，在 **Assets** 里直接下 `.apk`（不是压缩包，下完就能装）
+   - 标 `Pre-release` 的是每次 push 自动构建的，不带标记的是打过 tag 的正式版
 
 2. **安装**
    - 车机上允许安装未知来源应用
@@ -114,7 +115,8 @@ cd FMPlayer
 - 每次 push 到 main 分支自动触发编译
 - `versionCode` 自动 +1（基于 commit 数）
 - `versionName` 跟 git tag 同步（无 tag 时用 `0.0.commitCount`）
-- 编译产物上传到 GitHub Actions Artifacts
+- 编译好的 APK 自动发布到 Releases，可直接下载安装
+- 打了 tag 的是正式版，其余标记为 Pre-release
 
 ## 技术细节
 
