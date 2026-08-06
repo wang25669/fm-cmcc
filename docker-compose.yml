@@ -1,0 +1,44 @@
+services:
+
+  # ── 网易云音乐 API（内部服务，不需要对外暴露）────────────────────────────
+  ncm-api:
+    image: moefurina/ncm-api:latest
+    container_name: ncm-api
+    restart: unless-stopped
+
+  # ── VIP/灰色歌曲解锁（可选，默认不启用）─────────────────────────────────
+  unm-utils:
+    image: node:18-alpine
+    container_name: unm-utils
+    restart: unless-stopped
+    environment:
+      - ENABLE_FLAC=false   # 明确关闭无损音源，只要标准MP3，避免车机解码器认不出
+      - DISABLE_FLAC=true
+    command: sh -c "npx -y @neteasecloudmusicapienhanced/unblockmusic-utils"
+
+  # ── 统一后端（Android 客户端只和这个服务通信）────────────────────────────
+  # App 设置填写：http://192.168.123.178:3000 或 https://你的域名
+  fm-backend:
+    image: python:3.12-alpine
+    container_name: fm-backend
+    restart: unless-stopped
+    ports:
+      - "3000:5000"          # 对外只暴露这一个端口
+    volumes:
+      - ./fm_backend.py:/app/fm_backend.py
+      - fm_data:/data        # 持久化 NCM cookie，重启后无需重新扫码
+    working_dir: /app
+    command: sh -c "pip install flask requests -q && python fm_backend.py"
+    env_file:
+      - .env                              # 从 .env 文件加载配置（请复制 .env.example 并填写真实值）
+    environment:
+      - NCM_URL=${NCM_URL:-http://ncm-api:3000}
+      - OL_URL=${OL_URL}
+      - OL_USERNAME=${OL_USERNAME}
+      - OL_PASSWORD=${OL_PASSWORD}
+      - OL_MUSIC_DIR=${OL_MUSIC_DIR}
+      - UNM_ENABLED=${UNM_ENABLED:-true}
+      - UNM_URL=${UNM_URL:-http://unm-utils:3000}
+
+volumes:
+  fm_data:

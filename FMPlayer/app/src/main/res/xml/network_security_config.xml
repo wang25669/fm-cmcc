@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!--
+        允许 HTTP 明文通信。
+        ncm-api 和 OpenList 都部署在局域网，走 HTTP 是正常的。
+        移动云盘 CDN 播放地址是 HTTPS，不受影响。
+    -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system"/>
+        </trust-anchors>
+    </base-config>
+</network-security-config>

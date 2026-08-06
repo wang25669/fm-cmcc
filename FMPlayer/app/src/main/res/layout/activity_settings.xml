@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="match_parent"
+    android:background="@color/bg_dark">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="vertical" android:padding="16dp">
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="FM播放器设置" android:textColor="@color/text_primary"
+            android:textSize="18sp" android:textStyle="bold"
+            android:layout_marginTop="8dp" android:layout_marginBottom="16dp"/>
+
+        <!-- 后端地址 -->
+        <TextView style="@style/Label" android:text="后端服务地址（唯一配置项）"/>
+        <EditText android:id="@+id/et_backend_url" style="@style/Input"
+            android:hint="http://192.168.123.178:3000" android:inputType="textUri"/>
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="内网填 IP:端口，外网填 Cloudflare 域名"
+            android:textColor="@color/text_secondary" android:textSize="11sp"
+            android:layout_marginTop="4dp" android:layout_marginBottom="12dp"/>
+
+        <!-- 测试连接 -->
+        <Button android:id="@+id/btn_test"
+            android:layout_width="match_parent" android:layout_height="48dp"
+            android:text="测试连接" android:textSize="14sp"
+            android:backgroundTint="@color/bg_card"/>
+
+        <View android:layout_width="match_parent" android:layout_height="1dp"
+            android:background="@color/divider"
+            android:layout_marginTop="16dp" android:layout_marginBottom="16dp"/>
+
+        <!-- 网易云登录 -->
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="网易云音乐登录" android:textColor="@color/accent"
+            android:textSize="13sp" android:textStyle="bold" android:layout_marginBottom="8dp"/>
+
+        <Button android:id="@+id/btn_get_qr"
+            android:layout_width="match_parent" android:layout_height="48dp"
+            android:text="获取登录二维码" android:textSize="14sp"
+            android:backgroundTint="@color/bg_card"/>
+
+        <!-- 二维码区域 -->
+        <LinearLayout android:id="@+id/ll_qr_area"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical" android:gravity="center"
+            android:visibility="gone" android:layout_marginTop="12dp">
+            <ImageView android:id="@+id/iv_qr"
+                android:layout_width="220dp" android:layout_height="220dp"
+                android:background="@color/white" android:padding="8dp"
+                android:scaleType="fitCenter"/>
+            <TextView android:id="@+id/tv_qr_hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="8dp" android:gravity="center"
+                android:textColor="@color/text_secondary" android:textSize="13sp"/>
+        </LinearLayout>
+
+        <!-- 保存 -->
+        <Button android:id="@+id/btn_save"
+            android:layout_width="match_parent" android:layout_height="52dp"
+            android:layout_marginTop="24dp" android:text="保存并开始播放"
+            android:textSize="16sp" android:backgroundTint="@color/accent"
+            android:enabled="false"/>
+
+        <TextView android:id="@+id/tv_result"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="12dp" android:textSize="13sp"
+            android:lineSpacingExtra="4dp" android:gravity="center"
+            android:visibility="gone"/>
+
+        <View android:layout_width="match_parent" android:layout_height="24dp"/>
+    </LinearLayout>
+</ScrollView>

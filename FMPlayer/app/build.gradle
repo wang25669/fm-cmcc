@@ -1,0 +1,50 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.fmplayer'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "com.fmplayer"
+        minSdk 16          // 覆盖 API 16（Android 4.1）及以上，包含你的 API 17 车机
+        targetSdk 35
+        versionCode 2
+        versionName "1.1"
+        vectorDrawables.useSupportLibrary = true
+
+        // 去掉 ExoPlayer 和 material 之后方法数远低于 65536，不再需要 multidex。
+        // 这对 API 17 是实打实的收益：Lollipop 以前 multidex 要在首次启动时
+        // 解压安装第二个 dex，那段时间用户只能干等着。
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+
+    packaging {
+        resources {
+            excludes += '/META-INF/{AL2.0,LGPL2.1}'
+        }
+    }
+}
+
+dependencies {
+    // OkHttp 3.12.x — 支持 API 16+
+    implementation 'com.squareup.okhttp3:okhttp:3.12.13'
+    implementation 'com.squareup.okio:okio:1.17.5'
+
+    // AndroidX
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'androidx.media:media:1.4.3'   // 1.7.0 要求 API 19，降回 1.4.3（支持 API 14+）
+    implementation 'androidx.localbroadcastmanager:localbroadcastmanager:1.1.0'
+}

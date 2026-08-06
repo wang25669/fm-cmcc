@@ -1,0 +1,3 @@
+-keep class com.fmplayer.** { *; }
+-dontwarn okhttp3.**
+-dontwarn okio.**
