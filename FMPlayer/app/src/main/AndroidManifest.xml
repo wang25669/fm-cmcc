@@ -3,6 +3,14 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!--
+        Android 14（API 34）起，前台服务除了 FOREGROUND_SERVICE 之外，还要按类型
+        单独申请一个权限，否则 startForeground() 直接抛异常。媒体播放对应这一个。
+        老设备（车机 API 17/19）解析 manifest 时遇到不认识的权限名会忽略，无影响。
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <!-- Android 13（API 33）起通知要用户授权，前台服务通知也不例外 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
@@ -26,7 +34,14 @@
 
         <activity android:name=".SettingsActivity" android:label="@string/settings"/>
 
-        <service android:name=".service.MusicService" android:exported="false">
+        <!--
+            Android 14（API 34）起，前台服务必须声明 foregroundServiceType，
+            否则 startForeground() 直接抛 SecurityException。
+            老设备解析 manifest 时遇到不认识的属性会忽略，不影响车机使用。
+        -->
+        <service android:name=".service.MusicService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback">
             <intent-filter>
                 <action android:name="android.intent.action.MEDIA_BUTTON"/>
             </intent-filter>

@@ -16,6 +16,7 @@ FMPlayer/local.properties
 *.iml
 .DS_Store
 .claude/
+CLAUDE.md
 
 # 打包压缩文件（源码在仓库里，不需要再存一份 zip）
 *.zip
