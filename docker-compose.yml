@@ -12,7 +12,15 @@ services:
     container_name: unm-utils
     restart: unless-stopped
     environment:
-      - ENABLE_FLAC=false   # 明确关闭无损音源，只要标准MP3，避免车机解码器认不出
+      # 关闭无损音源，只要标准 MP3，避免车机解码器认不出。
+      # 变量名就是 DISABLE_FLAC，代码里只认这一个（源码里出现 5 次，全是
+      # `process.env.DISABLE_FLAC === 'true'`）。曾经这里还写过一行
+      # ENABLE_FLAC=false，那个变量在整个包里根本不存在，纯属无效配置。
+      #
+      # 注意它只是尽力而为：7 个活跃音源里只有 4 个认这个开关
+      # （bikonoo / byfuns / gdmusic / qijieyaPlus，各自降到 exhigh 或 br=320），
+      # 另外 3 个（msls / qijieya / unm）的上游 API 压根不接音质参数，
+      # 轮到它们先命中时照样可能回无损。真要拦死得在 fm_backend 那边验后缀。
       - DISABLE_FLAC=true
     command: sh -c "npx -y @neteasecloudmusicapienhanced/unblockmusic-utils"
 
