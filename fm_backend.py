@@ -97,21 +97,15 @@ def ol_get_url(filename):
 
 # ── ID索引：启动时建一次，之后增量更新，不做周期性扫描 ────────────────────
 #
-# 目录里允许两种命名格式共存：
-#   歌手-歌名-ID.mp3     （后端自动上传时使用）
-#   歌手-歌名(ID).mp3     （手动整理的习惯格式）
+# 唯一命名格式：歌手-歌名-ID.mp3
+# 手动往云盘丢文件也要按这个格式命名，否则识别不出 ID，会被当成
+# "云盘上没有"从而重复下载重复上传。
 
-ID_PATTERNS = [
-    re.compile(r'-(\d+)\.mp3$',    re.IGNORECASE),
-    re.compile(r'\((\d+)\)\.mp3$', re.IGNORECASE),
-]
+ID_PATTERN = re.compile(r'-(\d+)\.mp3$', re.IGNORECASE)
 
 def extract_song_id(filename):
-    for pattern in ID_PATTERNS:
-        m = pattern.search(filename)
-        if m:
-            return m.group(1)
-    return None
+    m = ID_PATTERN.search(filename)
+    return m.group(1) if m else None
 
 _index       = {}
 _index_lock  = threading.Lock()
