@@ -43,6 +43,8 @@ public class MusicService extends Service {
     public static final String ACTION_PREV        = "com.fmplayer.PREV";
     public static final String ACTION_STOP        = "com.fmplayer.STOP";
     public static final String ACTION_PLAY_HISTORY= "com.fmplayer.PLAY_HISTORY";
+    public static final String ACTION_LIKE        = "com.fmplayer.LIKE";   // 红心/取消当前歌
+    public static final String ACTION_TRASH       = "com.fmplayer.TRASH";  // 当前歌丢垃圾桶并跳下一首
     public static final String EXTRA_HISTORY_IDX  = "history_idx";
 
     public static final String BROADCAST_STATE  = "com.fmplayer.STATE_CHANGED";
@@ -52,6 +54,8 @@ public class MusicService extends Service {
     public static final String EXTRA_DURATION   = "duration_ms";
     public static final String EXTRA_POSITION   = "position_ms";
     public static final String EXTRA_STATUS     = "status_msg";
+    public static final String EXTRA_SONG_ID    = "song_id";   // 当前歌ID，UI据此判断按钮可用性
+    public static final String EXTRA_LIKED      = "liked";     // 当前歌是否已红心
 
     /**
      * 本次App会话已播放过的歌曲，按播放顺序排列，纯内存维护。
@@ -69,6 +73,11 @@ public class MusicService extends Service {
         synchronized (SESSION_HISTORY) {
             return new ArrayList<>(SESSION_HISTORY);
         }
+    }
+
+    /** 当前播放项在 SESSION_HISTORY 中的下标，供 UI 高亮"正在播放"的那一行。 */
+    public static int getCurrentIndex() {
+        return currentIndex;
     }
 
     private MediaSessionCompat mediaSession;
@@ -168,6 +177,8 @@ public class MusicService extends Service {
                 case ACTION_PLAY_HISTORY:
                     decoderFailStreak = 0;
                     jumpTo(intent.getIntExtra(EXTRA_HISTORY_IDX, -1)); break;
+                case ACTION_LIKE:         likeCurrentSong();  break;
+                case ACTION_TRASH:        decoderFailStreak = 0; trashCurrentSong(); break;
             }
         }
         return START_STICKY;
@@ -547,6 +558,80 @@ public class MusicService extends Service {
         goNext();
     }
 
+    // ── 私人FM反馈：红心 / 垃圾桶 ─────────────────────────────────────────
+    //
+    // 这两个动作是回传给网易云、直接调教私人FM推荐流的显式信号，比 scrobble
+    // 那条弱信号有力得多。网络调用一律扔后台线程（OkHttp 同步调用，主线程会抛
+    // NetworkOnMainThreadException）。UI 的按钮态靠广播里的 EXTRA_LIKED 驱动。
+
+    /**
+     * 红心/取消红心当前歌。
+     * 先乐观翻转本地 liked 态并立即广播（按钮马上有反馈），再后台请求；
+     * 请求失败就回滚并提示——避免让用户以为红心成功了其实没写进网易云。
+     */
+    private void likeCurrentSong() {
+        final SongInfo song = currentSong;
+        if (song == null || song.id == null || song.id.isEmpty()) {
+            broadcast("暂无可操作的歌曲");
+            return;
+        }
+        final boolean target = !song.liked;   // 目标态：当前没红心就去红心，反之取消
+        song.liked = target;                   // 乐观更新
+        broadcast(target ? "已喜欢" : "已取消喜欢");
+
+        final int myGeneration = playGeneration;
+        executor.submit(() -> {
+            boolean ok = false;
+            String  err = null;
+            try {
+                ok = BackendClient.get(MusicService.this).like(song.id, target);
+            } catch (Exception e) {
+                err = e.getMessage();
+            }
+            final boolean success = ok;
+            final String  errMsg  = err;
+            handler.post(() -> {
+                if (!success) {
+                    // 回滚。若期间用户已切歌(代次变了)，song 可能已不是当前歌，
+                    // 直接改 song.liked 即可，广播以 currentSong 为准不会串。
+                    song.liked = !target;
+                    DebugLog.log("like", "回传失败，已回滚: " + (errMsg != null ? errMsg : "后端拒绝"));
+                    if (myGeneration == playGeneration) {
+                        broadcast(target ? "喜欢失败" : "取消失败");
+                    }
+                } else if (myGeneration == playGeneration) {
+                    broadcast("");   // 成功，清掉临时状态文字，按钮态已是红心
+                }
+            });
+        });
+    }
+
+    /**
+     * 把当前歌丢进私人FM垃圾桶（不感兴趣），然后跳下一首。
+     *
+     * 用户点"不感兴趣"的意图是"这首立刻别放了"，所以无论上游回传成功与否
+     * 都会跳歌——回传只是把负反馈告诉网易云去调教推荐流，跳歌是本地体验，
+     * 两者互不阻塞。跳歌用 goNext()，走的还是"本地列表优先、越界才请求"的老路。
+     */
+    private void trashCurrentSong() {
+        final SongInfo song = currentSong;
+        if (song == null || song.id == null || song.id.isEmpty()) {
+            broadcast("暂无可操作的歌曲");
+            return;
+        }
+        final String sid = song.id;
+        broadcast("已加入不感兴趣");
+        executor.submit(() -> {
+            try {
+                BackendClient.get(MusicService.this).trash(sid);
+            } catch (Exception e) {
+                DebugLog.log("trash", "回传失败(不影响跳歌): " + e.getMessage());
+            }
+        });
+        // 立即跳下一首，不等回传结果
+        goNext();
+    }
+
     private void togglePlay() { engineSetPlayWhenReady(!engineGetPlayWhenReady()); }
 
 
@@ -573,6 +658,8 @@ public class MusicService extends Service {
         i.putExtra(EXTRA_DURATION,   (int) engineDuration());
         i.putExtra(EXTRA_POSITION,   (int) enginePosition());
         i.putExtra(EXTRA_STATUS,     status != null ? status : "");
+        i.putExtra(EXTRA_SONG_ID,    currentSong != null ? currentSong.id : "");
+        i.putExtra(EXTRA_LIKED,      currentSong != null && currentSong.liked);
         LocalBroadcastManager.getInstance(this).sendBroadcast(i);
     }
 

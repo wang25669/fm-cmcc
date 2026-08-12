@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 历史弹窗的容器背景：圆角深色卡片，替代系统 AlertDialog 那个方方正正的白框 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/bg_card"/>
+    <corners android:radius="16dp"/>
+</shape>

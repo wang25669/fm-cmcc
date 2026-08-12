@@ -99,6 +99,58 @@ public class BackendClient {
         }
     }
 
+    // ── 私人FM反馈：红心 / 垃圾桶 ─────────────────────────────────────────
+    //
+    // 这两个是回传给网易云、直接调教私人FM推荐流的显式信号。
+    // 都是同步阻塞调用，务必在后台线程里调（MusicService 已用 executor 包住）。
+    // 返回后端 {"ok":bool,...}，ok=false 说明上游拒绝（未登录/无版权/-460 等）。
+
+    /** 红心/取消红心。返回 true 表示后端确认成功。 */
+    public boolean like(String songId, boolean like) throws IOException {
+        try {
+            JSONObject body = new JSONObject();
+            body.put("id", songId);
+            body.put("like", like);
+            Request req = new Request.Builder()
+                    .url(base() + "/like")
+                    .post(RequestBody.create(JSON, body.toString()))
+                    .build();
+            try (Response resp = AppOkHttpClient.get().newCall(req).execute()) {
+                String s = resp.body() != null ? resp.body().string() : "{}";
+                boolean ok = new JSONObject(s).optBoolean("ok", false);
+                DebugLog.log("like", (like ? "红心" : "取消红心") + " " + songId
+                        + " HTTP " + resp.code() + " ok=" + ok);
+                return ok && resp.isSuccessful();
+            }
+        } catch (IOException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IOException("like 失败: " + e.getMessage());
+        }
+    }
+
+    /** 丢进私人FM垃圾桶（不感兴趣）。返回 true 表示后端确认成功。 */
+    public boolean trash(String songId) throws IOException {
+        try {
+            JSONObject body = new JSONObject();
+            body.put("id", songId);
+            Request req = new Request.Builder()
+                    .url(base() + "/trash")
+                    .post(RequestBody.create(JSON, body.toString()))
+                    .build();
+            try (Response resp = AppOkHttpClient.get().newCall(req).execute()) {
+                String s = resp.body() != null ? resp.body().string() : "{}";
+                boolean ok = new JSONObject(s).optBoolean("ok", false);
+                DebugLog.log("trash", "垃圾桶 " + songId + " HTTP " + resp.code() + " ok=" + ok);
+                return ok && resp.isSuccessful();
+            }
+        } catch (IOException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IOException("trash 失败: " + e.getMessage());
+        }
+    }
+
     // ── 点播/重取直链：后端实时生成一条新鲜直链 ───────────────────────────
 
     public String getPlayUrl(String filename, String songId) throws IOException {

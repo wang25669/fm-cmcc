@@ -410,6 +410,71 @@ def played():
             pass
     return jsonify({"ok": True})
 
+# ── 用户偏好回传：把车机上的显式正/负反馈写回网易云 ─────────────────────────
+#
+# 私人FM的推荐是算法根据行为数据实时调整的。之前只有 /played（scrobble）这一条
+# 弱信号——"听完了"充其量算轻微正向。真正能有力调教私人FM的是两个显式信号：
+#
+#   红心(/like)       强正向：告诉网易云"这类还要多推"
+#   垃圾桶(/fm_trash)  强负向：把这首踢出私人FM流，并降权同类，"别再推了"
+#
+# 两个上游接口地址是实测确认的（不是照搬文档）：
+#   moefurina/ncm-api 这个 Enhanced fork 里，垃圾桶的真实路径是 /fm_trash，
+#   而不是 Binaryify 原版文档写的 /personal_fm/trash（那个在本 fork 上 404）。
+#   源码 module/fm_trash.js -> /api/radio/trash/add，只读 query.id。
+#   module/like.js -> /api/radio/like，读 query.id 和 query.like('false'才取消)。
+
+@app.route("/like", methods=["POST"])
+def like():
+    """
+    红心/取消红心当前歌曲。
+    body: {"id": "歌曲ID", "like": true|false}   like 省略时默认 true(红心)
+    """
+    d   = request.get_json(force=True) or {}
+    sid = str(d.get("id", "")).strip()
+    if not sid:
+        return jsonify({"ok": False, "error": "id 不能为空"}), 400
+    if not _cookie:
+        return jsonify({"ok": False, "error": "网易云尚未登录"}), 401
+
+    # 上游 like.js 判定的是字符串 'false' 才取消，其余一律视为红心。
+    flag     = d.get("like", True)
+    like_str = "false" if (flag is False or str(flag).lower() == "false") else "true"
+    try:
+        r    = ncm_get("/like", id=sid, like=like_str)
+        code = r.get("code", -1)
+        ok   = code == 200
+        action = "红心" if like_str == "true" else "取消红心"
+        print(f"[like] {action} {sid} -> code={code}", flush=True)
+        return jsonify({"ok": ok, "code": code, "like": like_str == "true"})
+    except Exception as e:
+        print(f"[like] {sid} 失败: {e}", flush=True)
+        return jsonify({"ok": False, "error": str(e)}), 502
+
+@app.route("/trash", methods=["POST"])
+def trash():
+    """
+    把当前歌曲丢进私人FM垃圾桶（不感兴趣）。
+    body: {"id": "歌曲ID"}
+    这是对私人FM最强的负反馈——上游会把这首移出推荐流并降权同类。
+    """
+    d   = request.get_json(force=True) or {}
+    sid = str(d.get("id", "")).strip()
+    if not sid:
+        return jsonify({"ok": False, "error": "id 不能为空"}), 400
+    if not _cookie:
+        return jsonify({"ok": False, "error": "网易云尚未登录"}), 401
+
+    try:
+        r    = ncm_get("/fm_trash", id=sid)
+        code = r.get("code", -1)
+        ok   = code == 200
+        print(f"[trash] 垃圾桶 {sid} -> code={code}", flush=True)
+        return jsonify({"ok": ok, "code": code})
+    except Exception as e:
+        print(f"[trash] {sid} 失败: {e}", flush=True)
+        return jsonify({"ok": False, "error": str(e)}), 502
+
 @app.route("/play")
 def play():
     """点播历史歌曲：实时取新鲜直链"""

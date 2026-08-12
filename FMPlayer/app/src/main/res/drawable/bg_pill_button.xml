@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 弹窗底部"关闭"按钮：圆角描边胶囊 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/bg_elevated"/>
+    <corners android:radius="22dp"/>
+    <stroke android:width="1dp" android:color="@color/divider"/>
+</shape>

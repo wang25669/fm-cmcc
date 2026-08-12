@@ -24,3 +24,7 @@ CLAUDE.md
 # 日志和调试文件
 fmplayer_debug.txt
 fmplayer_crash.txt
+
+# Python 运行缓存（本地跑 fm_backend 测试时产生）
+__pycache__/
+*.pyc

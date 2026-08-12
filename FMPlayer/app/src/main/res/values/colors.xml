@@ -2,10 +2,14 @@
 <resources>
     <color name="bg_dark">#FF0D0D0D</color>
     <color name="bg_card">#FF1A1A1A</color>
+    <color name="bg_elevated">#FF242424</color>
     <color name="accent">#FF1DB954</color>
     <color name="text_primary">#FFFFFFFF</color>
     <color name="text_secondary">#FF9E9E9E</color>
     <color name="white">#FFFFFFFF</color>
     <color name="divider">#FF2A2A2A</color>
     <color name="error">#FFCF6679</color>
+    <!-- 喜欢=红心红，不感兴趣命中后变暖橙 -->
+    <color name="like_red">#FFE0405E</color>
+    <color name="trash_active">#FFE8833A</color>
 </resources>

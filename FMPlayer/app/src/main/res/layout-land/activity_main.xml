@@ -1,0 +1,146 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    横屏布局（车机）。控件 id 与竖屏 res/layout/activity_main.xml 完全一致，
+    MainActivity 用同一套 findViewById 绑定，无需区分方向。
+
+    横屏空间宽而矮，竖排会把按钮挤出屏幕，所以改成左右两栏：
+      顶栏横跨顶部；
+      左栏：歌曲信息垂直居中（视觉主体，纯文本、无封面、零网络）；
+      右栏：进度条 + 副操作行(喜欢/不感兴趣/列表) + 主控制栏(上一首/播放/下一首)。
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@color/bg_dark"
+    android:padding="16dp">
+
+    <!-- 顶栏 -->
+    <RelativeLayout android:layout_width="match_parent" android:layout_height="44dp">
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_centerVertical="true"
+            android:text="@string/app_name"
+            android:textColor="@color/text_primary" android:textSize="18sp" android:textStyle="bold"/>
+        <ImageButton android:id="@+id/btn_settings"
+            android:layout_width="44dp" android:layout_height="44dp"
+            android:layout_alignParentEnd="true" android:layout_centerVertical="true"
+            android:background="?attr/selectableItemBackgroundBorderless" android:padding="8dp"
+            app:srcCompat="@drawable/ic_settings" android:tint="@color/text_secondary"
+            android:contentDescription="@string/settings"/>
+    </RelativeLayout>
+
+    <!-- 主体：左右两栏 -->
+    <LinearLayout
+        android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1"
+        android:orientation="horizontal" android:layout_marginTop="8dp">
+
+        <!-- 左栏：歌曲信息，垂直居中 -->
+        <LinearLayout
+            android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1"
+            android:orientation="vertical" android:gravity="center"
+            android:paddingEnd="20dp">
+
+            <TextView android:id="@+id/tv_title"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="@string/loading"
+                android:textColor="@color/text_primary" android:textSize="24sp" android:textStyle="bold"
+                android:gravity="center" android:singleLine="true" android:ellipsize="marquee"
+                android:marqueeRepeatLimit="marquee_forever" android:focusable="true"/>
+
+            <TextView android:id="@+id/tv_artist"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:textColor="@color/text_secondary" android:textSize="16sp" android:gravity="center"/>
+
+            <TextView android:id="@+id/tv_status"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:textColor="@color/accent" android:textSize="12sp" android:gravity="center"
+                android:visibility="gone"/>
+        </LinearLayout>
+
+        <!-- 右栏：进度 + 两行按钮，垂直居中 -->
+        <LinearLayout
+            android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1"
+            android:orientation="vertical" android:gravity="center">
+
+            <!-- 进度条 -->
+            <SeekBar android:id="@+id/seek_bar"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:progressTint="@color/accent" android:thumbTint="@color/accent"/>
+
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:orientation="horizontal">
+                <TextView android:id="@+id/tv_position"
+                    android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
+                    android:text="0:00" android:textColor="@color/text_secondary" android:textSize="11sp"/>
+                <TextView android:id="@+id/tv_duration"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="0:00" android:textColor="@color/text_secondary" android:textSize="11sp"/>
+            </LinearLayout>
+
+            <!-- 副操作行：喜欢 / 不感兴趣 / 播放列表 -->
+            <LinearLayout
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:orientation="horizontal" android:gravity="center"
+                android:layout_marginTop="14dp">
+
+                <ImageButton android:id="@+id/btn_like"
+                    android:layout_width="46dp" android:layout_height="46dp"
+                    android:layout_marginEnd="24dp"
+                    android:background="@drawable/bg_circle_secondary" android:padding="11dp"
+                    app:srcCompat="@drawable/ic_heart_outline" android:tint="@color/text_secondary"
+                    android:scaleType="centerInside"
+                    android:contentDescription="@string/like"/>
+
+                <ImageButton android:id="@+id/btn_trash"
+                    android:layout_width="46dp" android:layout_height="46dp"
+                    android:layout_marginEnd="24dp"
+                    android:background="@drawable/bg_circle_secondary" android:padding="11dp"
+                    app:srcCompat="@drawable/ic_trash" android:tint="@color/text_secondary"
+                    android:scaleType="centerInside"
+                    android:contentDescription="@string/trash"/>
+
+                <ImageButton android:id="@+id/btn_playlist"
+                    android:layout_width="46dp" android:layout_height="46dp"
+                    android:background="@drawable/bg_circle_secondary" android:padding="11dp"
+                    app:srcCompat="@drawable/ic_playlist" android:tint="@color/text_secondary"
+                    android:scaleType="centerInside"
+                    android:contentDescription="@string/playlist"/>
+
+            </LinearLayout>
+
+            <!-- 主控制栏：上一首 / 播放暂停 / 下一首 -->
+            <LinearLayout
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:orientation="horizontal" android:gravity="center"
+                android:layout_marginTop="14dp">
+
+                <ImageButton android:id="@+id/btn_prev"
+                    android:layout_width="52dp" android:layout_height="52dp"
+                    android:layout_marginEnd="18dp"
+                    android:background="?attr/selectableItemBackgroundBorderless" android:padding="11dp"
+                    app:srcCompat="@drawable/ic_prev" android:tint="@color/text_primary"
+                    android:scaleType="centerInside"/>
+
+                <ImageButton android:id="@+id/btn_play_pause"
+                    android:layout_width="72dp" android:layout_height="72dp"
+                    android:background="@drawable/bg_circle_button" android:padding="18dp"
+                    app:srcCompat="@drawable/ic_play" android:tint="@color/white"
+                    android:scaleType="centerInside"/>
+
+                <ImageButton android:id="@+id/btn_next"
+                    android:layout_width="52dp" android:layout_height="52dp"
+                    android:layout_marginStart="18dp"
+                    android:background="?attr/selectableItemBackgroundBorderless" android:padding="11dp"
+                    app:srcCompat="@drawable/ic_next" android:tint="@color/text_primary"
+                    android:scaleType="centerInside"/>
+
+            </LinearLayout>
+
+        </LinearLayout>
+
+    </LinearLayout>
+
+</LinearLayout>

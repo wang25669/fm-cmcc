@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    历史列表单行。左侧序号/播放指示，右侧歌名+歌手两行。
+    当前正在播的那首，代码里把 tv_index 换成绿色小三角、歌名染成品牌绿。
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:gravity="center_vertical"
+    android:background="@drawable/bg_list_item"
+    android:paddingTop="10dp" android:paddingBottom="10dp"
+    android:paddingStart="8dp" android:paddingEnd="8dp"
+    android:minHeight="52dp">
+
+    <TextView android:id="@+id/tv_index"
+        android:layout_width="32dp" android:layout_height="wrap_content"
+        android:gravity="center"
+        android:textColor="@color/text_secondary" android:textSize="14sp"/>
+
+    <LinearLayout
+        android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
+        android:orientation="vertical" android:layout_marginStart="8dp">
+        <TextView android:id="@+id/tv_song"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:textColor="@color/text_primary" android:textSize="15sp"
+            android:singleLine="true" android:ellipsize="end"/>
+        <TextView android:id="@+id/tv_sub"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:textColor="@color/text_secondary" android:textSize="12sp"
+            android:singleLine="true" android:ellipsize="end"/>
+    </LinearLayout>
+
+</LinearLayout>

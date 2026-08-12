@@ -9,6 +9,8 @@ public class SongInfo {
     public String album;
     public String streamUrl;
     public String filename;
+    /** 是否已红心。仅客户端会话内维护——用户点了喜欢就置 true，用于按钮态展示。 */
+    public boolean liked = false;
 
     public static SongInfo fromJson(JSONObject j) {
         SongInfo s    = new SongInfo();
