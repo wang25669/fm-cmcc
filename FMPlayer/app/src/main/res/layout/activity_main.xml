@@ -51,6 +51,40 @@
         android:textColor="@color/accent" android:textSize="12sp" android:gravity="center"
         android:visibility="gone"/>
 
+    <!-- 副操作行：喜欢 / 不感兴趣 / 播放列表。
+         放在歌曲信息正下方、屏幕中部，和底部的播放控制彻底拉开距离，
+         也利用掉原来那片空白。喜欢/不感兴趣是大按钮(64dp)，醒目易点；
+         播放列表是低频辅助操作，保持小一号。 -->
+    <LinearLayout
+        android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="horizontal" android:gravity="center"
+        android:layout_marginTop="28dp">
+
+        <ImageButton android:id="@+id/btn_like"
+            android:layout_width="64dp" android:layout_height="64dp"
+            android:layout_marginEnd="36dp"
+            android:background="@drawable/bg_circle_secondary" android:padding="15dp"
+            app:srcCompat="@drawable/ic_heart_outline" android:tint="@color/text_secondary"
+            android:scaleType="centerInside"
+            android:contentDescription="@string/like"/>
+
+        <ImageButton android:id="@+id/btn_trash"
+            android:layout_width="64dp" android:layout_height="64dp"
+            android:layout_marginEnd="36dp"
+            android:background="@drawable/bg_circle_secondary" android:padding="15dp"
+            app:srcCompat="@drawable/ic_trash" android:tint="@color/text_secondary"
+            android:scaleType="centerInside"
+            android:contentDescription="@string/trash"/>
+
+        <ImageButton android:id="@+id/btn_playlist"
+            android:layout_width="48dp" android:layout_height="48dp"
+            android:background="@drawable/bg_circle_secondary" android:padding="11dp"
+            app:srcCompat="@drawable/ic_playlist" android:tint="@color/text_secondary"
+            android:scaleType="centerInside"
+            android:contentDescription="@string/playlist"/>
+
+    </LinearLayout>
+
     <!-- 下弹性留白 -->
     <Space android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1"/>
 
@@ -67,37 +101,6 @@
         <TextView android:id="@+id/tv_duration"
             android:layout_width="wrap_content" android:layout_height="wrap_content"
             android:text="0:00" android:textColor="@color/text_secondary" android:textSize="11sp"/>
-    </LinearLayout>
-
-    <!-- 副操作行：喜欢 / 不感兴趣 / 播放列表 -->
-    <LinearLayout
-        android:layout_width="match_parent" android:layout_height="wrap_content"
-        android:orientation="horizontal" android:gravity="center"
-        android:layout_marginTop="16dp">
-
-        <ImageButton android:id="@+id/btn_like"
-            android:layout_width="48dp" android:layout_height="48dp"
-            android:layout_marginEnd="28dp"
-            android:background="@drawable/bg_circle_secondary" android:padding="12dp"
-            app:srcCompat="@drawable/ic_heart_outline" android:tint="@color/text_secondary"
-            android:scaleType="centerInside"
-            android:contentDescription="@string/like"/>
-
-        <ImageButton android:id="@+id/btn_trash"
-            android:layout_width="48dp" android:layout_height="48dp"
-            android:layout_marginEnd="28dp"
-            android:background="@drawable/bg_circle_secondary" android:padding="12dp"
-            app:srcCompat="@drawable/ic_trash" android:tint="@color/text_secondary"
-            android:scaleType="centerInside"
-            android:contentDescription="@string/trash"/>
-
-        <ImageButton android:id="@+id/btn_playlist"
-            android:layout_width="48dp" android:layout_height="48dp"
-            android:background="@drawable/bg_circle_secondary" android:padding="12dp"
-            app:srcCompat="@drawable/ic_playlist" android:tint="@color/text_secondary"
-            android:scaleType="centerInside"
-            android:contentDescription="@string/playlist"/>
-
     </LinearLayout>
 
     <!-- 主控制栏：上一首 / 播放暂停 / 下一首 -->

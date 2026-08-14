@@ -5,8 +5,8 @@
 
     横屏空间宽而矮，竖排会把按钮挤出屏幕，所以改成左右两栏：
       顶栏横跨顶部；
-      左栏：歌曲信息垂直居中（视觉主体，纯文本、无封面、零网络）；
-      右栏：进度条 + 副操作行(喜欢/不感兴趣/列表) + 主控制栏(上一首/播放/下一首)。
+      左栏：歌曲信息 + 大号喜欢/不感兴趣按钮（与播放控制彻底分区）；
+      右栏：进度条 + 播放列表 + 主控制栏(上一首/播放/下一首)。
 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
@@ -58,6 +58,30 @@
                 android:layout_marginTop="6dp"
                 android:textColor="@color/accent" android:textSize="12sp" android:gravity="center"
                 android:visibility="gone"/>
+
+            <!-- 私人FM反馈：横屏放到左栏，和右栏播放控制做空间分区。
+                 72dp 大按钮充分利用横屏空位，图标也比原来的 46dp 醒目。 -->
+            <LinearLayout
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:orientation="horizontal" android:gravity="center"
+                android:layout_marginTop="32dp">
+
+                <ImageButton android:id="@+id/btn_like"
+                    android:layout_width="72dp" android:layout_height="72dp"
+                    android:layout_marginEnd="48dp"
+                    android:background="@drawable/bg_circle_secondary" android:padding="16dp"
+                    app:srcCompat="@drawable/ic_heart_outline" android:tint="@color/text_secondary"
+                    android:scaleType="centerInside"
+                    android:contentDescription="@string/like"/>
+
+                <ImageButton android:id="@+id/btn_trash"
+                    android:layout_width="72dp" android:layout_height="72dp"
+                    android:background="@drawable/bg_circle_secondary" android:padding="16dp"
+                    app:srcCompat="@drawable/ic_trash" android:tint="@color/text_secondary"
+                    android:scaleType="centerInside"
+                    android:contentDescription="@string/trash"/>
+
+            </LinearLayout>
         </LinearLayout>
 
         <!-- 右栏：进度 + 两行按钮，垂直居中 -->
@@ -80,36 +104,14 @@
                     android:text="0:00" android:textColor="@color/text_secondary" android:textSize="11sp"/>
             </LinearLayout>
 
-            <!-- 副操作行：喜欢 / 不感兴趣 / 播放列表 -->
-            <LinearLayout
-                android:layout_width="match_parent" android:layout_height="wrap_content"
-                android:orientation="horizontal" android:gravity="center"
-                android:layout_marginTop="14dp">
-
-                <ImageButton android:id="@+id/btn_like"
-                    android:layout_width="46dp" android:layout_height="46dp"
-                    android:layout_marginEnd="24dp"
-                    android:background="@drawable/bg_circle_secondary" android:padding="11dp"
-                    app:srcCompat="@drawable/ic_heart_outline" android:tint="@color/text_secondary"
-                    android:scaleType="centerInside"
-                    android:contentDescription="@string/like"/>
-
-                <ImageButton android:id="@+id/btn_trash"
-                    android:layout_width="46dp" android:layout_height="46dp"
-                    android:layout_marginEnd="24dp"
-                    android:background="@drawable/bg_circle_secondary" android:padding="11dp"
-                    app:srcCompat="@drawable/ic_trash" android:tint="@color/text_secondary"
-                    android:scaleType="centerInside"
-                    android:contentDescription="@string/trash"/>
-
-                <ImageButton android:id="@+id/btn_playlist"
-                    android:layout_width="46dp" android:layout_height="46dp"
-                    android:background="@drawable/bg_circle_secondary" android:padding="11dp"
-                    app:srcCompat="@drawable/ic_playlist" android:tint="@color/text_secondary"
-                    android:scaleType="centerInside"
-                    android:contentDescription="@string/playlist"/>
-
-            </LinearLayout>
+            <!-- 播放列表是低频辅助操作，单独保留在右栏。 -->
+            <ImageButton android:id="@+id/btn_playlist"
+                android:layout_width="48dp" android:layout_height="48dp"
+                android:layout_marginTop="22dp"
+                android:background="@drawable/bg_circle_secondary" android:padding="11dp"
+                app:srcCompat="@drawable/ic_playlist" android:tint="@color/text_secondary"
+                android:scaleType="centerInside"
+                android:contentDescription="@string/playlist"/>
 
             <!-- 主控制栏：上一首 / 播放暂停 / 下一首 -->
             <LinearLayout

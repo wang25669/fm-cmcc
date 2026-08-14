@@ -154,8 +154,9 @@ public class MainActivity extends AppCompatActivity {
                     tvIndex.setTextColor(getResources().getColor(R.color.accent));
                     tvSong.setTextColor(getResources().getColor(R.color.accent));
                 } else {
-                    // 显示"离现在多近"的序号：最新=1
-                    tvIndex.setText(String.valueOf(hist.size() - realIdx));
+                    // 显示真实播放序号：最早播放的那首(realIdx=0)是 1，每播一首 +1。
+                    // 倒序只影响排列(最新在最上)，序号仍按真实播放顺序编号。
+                    tvIndex.setText(String.valueOf(realIdx + 1));
                     tvIndex.setTextColor(getResources().getColor(R.color.text_secondary));
                     tvSong.setTextColor(getResources().getColor(R.color.text_primary));
                 }
