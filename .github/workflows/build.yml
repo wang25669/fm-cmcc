@@ -56,6 +56,14 @@ jobs:
         echo "Updated build.gradle:"
         grep "versionCode\|versionName" build.gradle
 
+    - name: Restore fixed debug keystore
+      run: |
+        # 用仓库里固定的 debug keystore。AGP 发现 ~/.android/debug.keystore
+        # 已存在就直接使用，不会现场随机生成——否则每次构建签名不同，
+        # 覆盖安装报"签名不符"，必须卸载重装。
+        mkdir -p "$HOME/.android"
+        cp keystore/debug.keystore "$HOME/.android/debug.keystore"
+
     - name: Build debug APK
       run: |
         cd FMPlayer

@@ -2,6 +2,9 @@
 .env
 *.keystore
 *.jks
+# 固定签名 keystore 必须进仓库——CI 用同一把密钥签名，
+# 否则每次构建随机生成新密钥，APK 签名不一致导致必须卸载重装
+!keystore/debug.keystore
 
 # Android 构建产物
 FMPlayer/build/
