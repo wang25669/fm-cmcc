@@ -26,6 +26,15 @@ OL_PASS      = os.environ.get("OL_PASSWORD",  "")
 OL_DIR       = os.environ.get("OL_MUSIC_DIR", "/移动云盘/music").rstrip("/")
 UNM_URL      = os.environ.get("UNM_URL",      "")
 UNM_ENABLED  = os.environ.get("UNM_ENABLED",  "false").lower() == "true"
+# UNM 音源优先级：按实测稳定性+速度排序，稳的快的排前面（gdmusic/msls 0.5s，
+# byfuns/unm 2s 级）；bikonoo/qijieya/qijieyaPlus 实测常卡死，压到最后当兜底。
+# 可用 UNM_SOURCES 环境变量覆盖（逗号分隔）。
+UNM_SOURCES  = [s.strip() for s in os.environ.get(
+    "UNM_SOURCES",
+    "gdmusic,msls,byfuns,unm,bikonoo,qijieya,qijieyaPlus"
+).split(",") if s.strip()]
+# 单个音源的超时（秒）。unm-utils 各音源模块内部没设 axios 超时，全靠这里兜底。
+UNM_SOURCE_TIMEOUT = float(os.environ.get("UNM_SOURCE_TIMEOUT", "6"))
 COOKIE_FILE  = "/data/ncm_cookie.txt"
 MAX_CANDIDATES_PER_NEXT = 5   # 一次/next最多尝试几个候选歌曲（防止连续遇到无法播放的歌卡死）
 
@@ -190,13 +199,30 @@ def ncm_song_url(song_id):
 def try_unm(song_id, reason):
     if not UNM_ENABLED or not UNM_URL:
         raise RuntimeError(f"{reason}（UNM 未启用）")
-    r = requests.get(f"{UNM_URL.rstrip('/')}/match", params={"id": song_id}, timeout=10)
-    d = r.json().get("data") or {}
-    url = d.get("url", "")
-    if url:
-        print(f"[unm] {song_id} 解锁成功 via {d.get('source','?')}", flush=True)
-        return url
-    raise RuntimeError(f"{reason}（UNM 未找到音源）")
+    base = UNM_URL.rstrip("/")
+    # 逐个音源用 ?source= 显式指定，每个独立短超时，一个卡住不拖累其他。
+    # 不走 unm-utils 默认的「无 source 遍历」——它按文件名顺序(bikonoo 打头)
+    # 挨个试，且每个音源模块内部都没给 axios 设超时（axios 默认无限等待）。
+    # 只要打头的 bikonoo 这类上游挂了就整体卡死，fm 这边 timeout 一到就
+    # 解锁失败，哪怕后面的 gdmusic/msls 秒回也轮不到。实测(2026-08-16)：
+    # gdmusic 0.5s / msls 0.5s / byfuns 2s / unm 2.4s 均正常；
+    # bikonoo / qijieya / qijieyaPlus 全部卡死 8s+。
+    last_err = ""
+    for src in UNM_SOURCES:
+        try:
+            r = requests.get(f"{base}/match",
+                             params={"id": song_id, "source": src},
+                             timeout=UNM_SOURCE_TIMEOUT)
+            url = (r.json().get("data") or {}).get("url", "")
+            if url:
+                print(f"[unm] {song_id} 解锁成功 via {src}", flush=True)
+                return url
+            last_err = f"{src} 无音源"
+        except Exception as e:
+            last_err = f"{src}:{e}"
+            print(f"[unm] {song_id} 音源 {src} 失败/超时，换下一个（{e}）", flush=True)
+            continue
+    raise RuntimeError(f"{reason}（UNM 所有音源均失败，最后：{last_err}）")
 
 def ncm_fetch_fm():
     """拉取私人FM歌单候选（一般返回1-3首）"""
