@@ -83,15 +83,30 @@ def ol_post(path, body):
     global _ol_token
     if not _ol_token:
         ol_login()
+    last = None
     for _ in range(2):
         r = requests.post(f"{OL_URL}{path}", json=body,
                           headers={"Authorization": _ol_token}, timeout=15)
-        if r.status_code == 401:
-            ol_login()
-            continue
-        r.raise_for_status()
-        return r.json()
-    raise RuntimeError("OpenList 连续 401")
+        # OpenList 的鉴权失败有两种表现，必须都认：
+        #   1) HTTP 401
+        #   2) HTTP 200，但 body 里 code==401（token 过期/失效走的是这条！
+        #      实测返回 {"code":401,"message":"token is invalidated/expired"}）
+        # 早期只判断 status_code==401，导致 token 一过期自动重登录从不触发，
+        # 只能靠重启进程续期——这正是"跑几天后 /next 全部 token is expired"的根因。
+        if r.status_code != 401:
+            try:
+                data = r.json()
+            except Exception:
+                r.raise_for_status()
+                raise
+            if data.get("code") != 401:
+                r.raise_for_status()
+                return data
+            last = data.get("message")
+        # 走到这里 = 鉴权失效，重登录后重试一次
+        print(f"[ol] token 失效（{last or 'HTTP 401'}），重新登录", flush=True)
+        ol_login()
+    raise RuntimeError(f"OpenList 鉴权连续失败: {last or '401'}")
 
 def ol_get_url(filename):
     """
