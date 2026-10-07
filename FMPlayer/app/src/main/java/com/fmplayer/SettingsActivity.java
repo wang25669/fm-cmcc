@@ -1,5 +1,6 @@
 package com.fmplayer;
 
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -24,7 +25,7 @@ import org.json.JSONObject;
 public class SettingsActivity extends AppCompatActivity {
 
     private EditText     etUrl;
-    private Button       btnTest, btnQr, btnSave;
+    private Button       btnTest, btnQr, btnSave, btnMode;
     private LinearLayout llQrArea;
     private ImageView    ivQr;
     private TextView     tvQrHint, tvResult;
@@ -32,6 +33,11 @@ public class SettingsActivity extends AppCompatActivity {
     private final Handler pollHandler = new Handler();
     private Runnable      pollRunnable;
     private boolean       ncmLoggedIn = false;
+
+    /** 设置页模式选项：value -> 显示名。SCENE_RCMD 需要配几十种 submode，App 端先不放。 */
+    private static final String[] MODE_VALUES  = {"DEFAULT", "EXPLORE", "FAMILIAR"};
+    private static final String[] MODE_LABELS  = {"默认（常规私人FM）", "探索（多推新内容）", "熟悉（偏老歌）"};
+    private String currentMode = null;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -42,6 +48,7 @@ public class SettingsActivity extends AppCompatActivity {
         btnTest   = findViewById(R.id.btn_test);
         btnQr     = findViewById(R.id.btn_get_qr);
         btnSave   = findViewById(R.id.btn_save);
+        btnMode   = findViewById(R.id.btn_mode);
         llQrArea  = findViewById(R.id.ll_qr_area);
         ivQr      = findViewById(R.id.iv_qr);
         tvQrHint  = findViewById(R.id.tv_qr_hint);
@@ -56,6 +63,8 @@ public class SettingsActivity extends AppCompatActivity {
         btnTest.setOnClickListener(v -> checkBackendHealth(true));
         btnQr.setOnClickListener(v   -> fetchQrCode());
         btnSave.setOnClickListener(v -> save());
+        btnMode.setOnClickListener(v -> showModePicker());
+        loadMode();
     }
 
     @Override protected void onDestroy() { super.onDestroy(); stopPoll(); }
@@ -177,6 +186,81 @@ public class SettingsActivity extends AppCompatActivity {
 
     private void stopPoll() {
         if (pollRunnable != null) { pollHandler.removeCallbacks(pollRunnable); pollRunnable = null; }
+    }
+
+    // ── 私人FM推荐模式：读取 + 选择弹窗 ─────────────────────────────────────
+    //
+    // 模式存在后端（/data/fm_mode.txt），App 只是读写。打开设置页时回读一次；
+    // 点按钮弹单选列表，选中即 POST 后端并回读确认——不搞本地缓存，避免
+    // 车机和后端两处状态不一致。
+
+    private void loadMode() {
+        saveUrl();   // 先存地址，防止用户改了 URL 还没点测试就读错后端
+        if (!ServerPreferences.get(this).isConfigured()) {
+            btnMode.setText("推荐模式：请先配置后端地址");
+            btnMode.setEnabled(false);
+            return;
+        }
+        btnMode.setEnabled(true);
+        btnMode.setText("推荐模式：加载中...");
+        new Thread(() -> {
+            String mode = null;
+            try { mode = BackendClient.get(this).getMode(); } catch (Exception ignored) { }
+            final String m = mode;
+            runOnUiThread(() -> {
+                if (m == null) {
+                    btnMode.setText("推荐模式：读取失败，点此重试");
+                    currentMode = null;
+                } else {
+                    currentMode = m;
+                    btnMode.setText("推荐模式：" + labelOf(m));
+                }
+            });
+        }).start();
+    }
+
+    private String labelOf(String mode) {
+        for (int i = 0; i < MODE_VALUES.length; i++) {
+            if (MODE_VALUES[i].equals(mode)) return MODE_LABELS[i];
+        }
+        return mode;   // 后端将来加了新模式，App 未升级时至少把值显示出来
+    }
+
+    private void showModePicker() {
+        if (currentMode == null) { loadMode(); return; }
+
+        // 单选列表：当前项打钩。用系统 AlertDialog + setSingleChoiceItems，
+        // API 17 原生支持，和现有播放列表弹窗同一路子（不引入新依赖）。
+        int checked = 0;
+        for (int i = 0; i < MODE_VALUES.length; i++) {
+            if (MODE_VALUES[i].equals(currentMode)) { checked = i; break; }
+        }
+
+        new AlertDialog.Builder(this)
+                .setTitle("私人FM推荐模式")
+                .setSingleChoiceItems(MODE_LABELS, checked, (dialog, which) -> {
+                    dialog.dismiss();
+                    final String target = MODE_VALUES[which];
+                    if (target.equals(currentMode)) return;
+                    btnMode.setText("推荐模式：切换中...");
+                    new Thread(() -> {
+                        try {
+                            final String confirmed = BackendClient.get(this).setMode(target);
+                            runOnUiThread(() -> {
+                                currentMode = confirmed;
+                                btnMode.setText("推荐模式：" + labelOf(confirmed));
+                                show("✓ 已切换，下一首生效", false);
+                            });
+                        } catch (Exception e) {
+                            runOnUiThread(() -> {
+                                btnMode.setText("推荐模式：" + labelOf(currentMode));
+                                show("✗ 切换失败: " + e.getMessage(), true);
+                            });
+                        }
+                    }).start();
+                })
+                .setNegativeButton("取消", null)
+                .show();
     }
 
     // ── 保存 ────────────────────────────────────────────────────────────────

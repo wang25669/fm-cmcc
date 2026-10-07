@@ -36,7 +36,39 @@ UNM_SOURCES  = [s.strip() for s in os.environ.get(
 # 单个音源的超时（秒）。unm-utils 各音源模块内部没设 axios 超时，全靠这里兜底。
 UNM_SOURCE_TIMEOUT = float(os.environ.get("UNM_SOURCE_TIMEOUT", "6"))
 COOKIE_FILE  = "/data/ncm_cookie.txt"
+MODE_FILE    = "/data/fm_mode.txt"    # 私人FM模式持久化（App 设置页可改）
 MAX_CANDIDATES_PER_NEXT = 5   # 一次/next最多尝试几个候选歌曲（防止连续遇到无法播放的歌卡死）
+
+# ── 私人FM模式 ────────────────────────────────────────────────────────────
+#
+# 上游 ncm-api（NeteaseCloudMusicApiEnhanced fork，源码 module/personal_fm_mode.js）
+# 提供 /personal/fm/mode 接口，同样打网易云 /api/v1/radio/get，但带推荐模式：
+#   DEFAULT  默认模式（裸 /personal_fm 的等效行为，顺着画像收敛，越听越窄）
+#   FAMILIAR 熟悉模式（偏老歌/听过的方向，最窄）
+#   EXPLORE  探索模式（主动推新内容，治"没新意"）
+#   SCENE_RCMD 场景模式（必须配 submode，如 FOCUS/RAINY/ROCK 等几十种场景）
+# 模式值来自 App 设置页，白名单校验后落盘 /data/fm_mode.txt，重启不丢。
+FM_MODES = ("DEFAULT", "FAMILIAR", "EXPLORE", "SCENE_RCMD")
+DEFAULT_FM_MODE = "DEFAULT"
+
+def load_fm_mode():
+    global _fm_mode
+    try:
+        with open(MODE_FILE) as f:
+            v = f.read().strip().upper()
+        _fm_mode = v if v in FM_MODES else DEFAULT_FM_MODE
+    except Exception:
+        _fm_mode = DEFAULT_FM_MODE
+
+def save_fm_mode(mode):
+    global _fm_mode
+    _fm_mode = mode
+    os.makedirs(os.path.dirname(MODE_FILE), exist_ok=True)
+    with open(MODE_FILE, "w") as f:
+        f.write(mode)
+
+_fm_mode = DEFAULT_FM_MODE
+load_fm_mode()   # import 时读盘，比在 __main__ 里读更稳（gunicorn 等多进程入口也不漏）
 
 NCM_HEADERS  = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -240,10 +272,19 @@ def try_unm(song_id, reason):
     raise RuntimeError(f"{reason}（UNM 所有音源均失败，最后：{last_err}）")
 
 def ncm_fetch_fm():
-    """拉取私人FM歌单候选（一般返回1-3首）"""
-    data = ncm_get("/personal_fm")
+    """拉取私人FM歌单候选（一般返回1-3首）。
+
+    模式来自 /mode 接口（App 设置页可改）。DEFAULT 走裸 /personal_fm；
+    其他模式走 /personal/fm/mode（源码 personal_fm_mode.js，上游同样打
+    /api/v1/radio/get，只是多带 mode/submode/limit）。limit 固定 3，
+    与上游 personal_fm_mode.js 的默认一致。
+    """
+    if _fm_mode == DEFAULT_FM_MODE:
+        data = ncm_get("/personal_fm")
+    else:
+        data = ncm_get("/personal/fm/mode", mode=_fm_mode, limit=3)
     if data.get("code") != 200:
-        raise RuntimeError(f"personal_fm 失败: {data.get('message')}")
+        raise RuntimeError(f"personal_fm({ _fm_mode }) 失败: {data.get('message')}")
     songs = []
     for item in data.get("data") or []:
         artists = item.get("artists") or []
@@ -515,6 +556,27 @@ def trash():
     except Exception as e:
         print(f"[trash] {sid} 失败: {e}", flush=True)
         return jsonify({"ok": False, "error": str(e)}), 502
+
+@app.route("/mode", methods=["GET", "POST"])
+def fm_mode():
+    """
+    查看/切换私人FM推荐模式。
+    GET  -> {"ok":true,"mode":"EXPLORE","modes":[...]}
+    POST body: {"mode": "DEFAULT|FAMILIAR|EXPLORE|SCENE_RCMD"}
+    模式落盘 /data/fm_mode.txt，重启不丢。切换后立即生效——下一次 /next
+    就按新模式取歌（后台预取的那一首还是旧模式的，听完即换血）。
+    """
+    if request.method == "GET":
+        return jsonify({"ok": True, "mode": _fm_mode, "modes": list(FM_MODES)})
+
+    d    = request.get_json(force=True) or {}
+    mode = str(d.get("mode", "")).strip().upper()
+    if mode not in FM_MODES:
+        return jsonify({"ok": False,
+                        "error": f"mode 必须是 {'/'.join(FM_MODES)} 之一"}), 400
+    save_fm_mode(mode)
+    print(f"[mode] 私人FM模式 -> {mode}", flush=True)
+    return jsonify({"ok": True, "mode": _fm_mode})
 
 @app.route("/play")
 def play():

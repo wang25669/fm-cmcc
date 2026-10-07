@@ -4,6 +4,7 @@ import android.content.Context;
 import android.util.Log;
 
 import com.fmplayer.model.SongInfo;
+import com.fmplayer.network.DebugLog;
 import com.fmplayer.preferences.ServerPreferences;
 
 import org.json.JSONObject;
@@ -148,6 +149,50 @@ public class BackendClient {
             throw e;
         } catch (Exception e) {
             throw new IOException("trash 失败: " + e.getMessage());
+        }
+    }
+
+    // ── 私人FM推荐模式：查看/切换 ──────────────────────────────────────────
+    //
+    // 模式存在后端 /data/fm_mode.txt（服务端持久化），App 只是读写它。
+    // 同步阻塞调用，务必在后台线程里调。
+
+    /** 当前模式。返回 null 表示读取失败。 */
+    public String getMode() throws IOException {
+        Request req = new Request.Builder().url(base() + "/mode").build();
+        try (Response resp = AppOkHttpClient.get().newCall(req).execute()) {
+            if (!resp.isSuccessful()) throw new IOException("HTTP " + resp.code());
+            return new JSONObject(resp.body().string()).optString("mode", null);
+        } catch (IOException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IOException("getMode 失败: " + e.getMessage());
+        }
+    }
+
+    /** 切换模式。返回后端确认的模式值，失败抛 IOException。 */
+    public String setMode(String mode) throws IOException {
+        try {
+            JSONObject body = new JSONObject();
+            body.put("mode", mode);
+            Request req = new Request.Builder()
+                    .url(base() + "/mode")
+                    .post(RequestBody.create(JSON, body.toString()))
+                    .build();
+            try (Response resp = AppOkHttpClient.get().newCall(req).execute()) {
+                String s = resp.body() != null ? resp.body().string() : "{}";
+                JSONObject o = new JSONObject(s);
+                if (!resp.isSuccessful() || !o.optBoolean("ok", false)) {
+                    throw new IOException(o.optString("error", "HTTP " + resp.code()));
+                }
+                DebugLog.log("mode", "切换 -> " + o.optString("mode", mode)
+                        + " HTTP " + resp.code());
+                return o.optString("mode", mode);
+            }
+        } catch (IOException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IOException("setMode 失败: " + e.getMessage());
         }
     }
 

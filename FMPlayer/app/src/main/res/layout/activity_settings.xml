@@ -30,6 +30,25 @@
             android:background="@color/divider"
             android:layout_marginTop="16dp" android:layout_marginBottom="16dp"/>
 
+        <!-- 私人FM推荐模式 -->
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="私人FM推荐模式" android:textColor="@color/accent"
+            android:textSize="13sp" android:textStyle="bold" android:layout_marginBottom="8dp"/>
+
+        <Button android:id="@+id/btn_mode"
+            android:layout_width="match_parent" android:layout_height="48dp"
+            android:text="推荐模式：加载中..." android:textSize="14sp"
+            android:backgroundTint="@color/bg_card"/>
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="探索=推新内容；默认=常规私人FM；熟悉=偏老歌。切换后下一首生效"
+            android:textColor="@color/text_secondary" android:textSize="11sp"
+            android:layout_marginTop="4dp" android:layout_marginBottom="12dp"/>
+
+        <View android:layout_width="match_parent" android:layout_height="1dp"
+            android:background="@color/divider"
+            android:layout_marginTop="0dp" android:layout_marginBottom="16dp"/>
+
         <!-- 网易云登录 -->
         <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
             android:text="网易云音乐登录" android:textColor="@color/accent"
