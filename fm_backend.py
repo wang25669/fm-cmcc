@@ -565,9 +565,9 @@ def fm_mode():
     """
     查看/切换私人FM推荐模式。
     GET  -> {"ok":true,"mode":"EXPLORE","modes":[...]}
-    POST body: {"mode": "DEFAULT|FAMILIAR|EXPLORE|SCENE_RCMD"}
-    模式落盘 /data/fm_mode.txt，重启不丢。切换后立即生效——下一次 /next
-    就按新模式取歌（后台预取的那一首还是旧模式的，听完即换血）。
+    POST body: {"mode": "DEFAULT|FAMILIAR|EXPLORE|COMMUTE|SCENE_RCMD"}
+    模式落盘 /data/fm_mode.txt，重启不丢。切换后立即生效——立即清空
+    旧模式的后台预取，下一次 /next 100% 按新模式取歌。
     """
     if request.method == "GET":
         return jsonify({"ok": True, "mode": _fm_mode, "modes": list(FM_MODES)})
@@ -578,8 +578,101 @@ def fm_mode():
         return jsonify({"ok": False,
                         "error": f"mode 必须是 {'/'.join(FM_MODES)} 之一"}), 400
     save_fm_mode(mode)
-    print(f"[mode] 私人FM模式 -> {mode}", flush=True)
+    # 切换模式后立刻清空后台预取，确保下一次 /next 一定按新模式取歌
+    global _prefetch
+    with _prefetch_lock:
+        _prefetch = None
+    print(f"[mode] 私人FM模式 -> {mode}（预取已清空）", flush=True)
     return jsonify({"ok": True, "mode": _fm_mode})
+
+def parse_filename_meta(filename, song_id):
+    """从移动云盘规范文件名（歌手-歌名-ID.mp3）中解析出歌手与歌名"""
+    name = filename
+    if name.lower().endswith(".mp3"):
+        name = name[:-4]
+    suffix = f"-{song_id}"
+    if name.endswith(suffix):
+        name = name[:-len(suffix)]
+    else:
+        name = re.sub(r'-\d+$', '', name)
+    name = name.strip()
+    if "-" in name:
+        parts = name.split("-", 1)
+        return {
+            "id": str(song_id),
+            "artist": parts[0].strip(),
+            "title": parts[1].strip(),
+            "album": ""
+        }
+    return {
+        "id": str(song_id),
+        "artist": "",
+        "title": name.strip(),
+        "album": ""
+    }
+
+@app.route("/songs/batch_info", methods=["POST"])
+def songs_batch_info():
+    """
+    批量查询歌曲元数据（供车机离线缓存补全歌名、歌手）。
+    POST body: {"ids": ["123", "456", ...]}
+    返回: {"ok": true, "songs": [{"id": "123", "title": "...", "artist": "...", "album": "..."}, ...]}
+    优先使用移动云盘文件名秒级解析兜底，并尝试网易云 /song/detail 批量拉取权威元数据。
+    """
+    d   = request.get_json(force=True) or {}
+    ids = d.get("ids", [])
+    if not isinstance(ids, list):
+        return jsonify({"ok": False, "error": "ids 必须是列表"}), 400
+
+    seen = set()
+    clean_ids = []
+    for sid in ids:
+        s = str(sid).strip()
+        if s and s not in seen:
+            seen.add(s)
+            clean_ids.append(s)
+
+    result_map = {}
+
+    # 1. 先用云盘索引文件名做基础解析（本地秒回，无外部网络依赖）
+    for sid in clean_ids:
+        fname = find_existing_filename(sid)
+        if fname:
+            result_map[sid] = parse_filename_meta(fname, sid)
+
+    # 2. 尝试从网易云 /song/detail 批量拉取权威元数据
+    if _cookie and clean_ids:
+        batch_size = 50
+        for i in range(0, len(clean_ids), batch_size):
+            chunk = clean_ids[i:i + batch_size]
+            try:
+                data = ncm_get("/song/detail", ids=",".join(chunk))
+                if data.get("code") == 200:
+                    for item in data.get("songs") or []:
+                        sid = str(item.get("id"))
+                        name = item.get("name", "")
+                        ars = item.get("ar") or item.get("artists") or []
+                        ar_name = ars[0].get("name", "") if ars else ""
+                        al = item.get("al") or item.get("album") or {}
+                        al_name = al.get("name", "")
+                        result_map[sid] = {
+                            "id": sid,
+                            "title": name,
+                            "artist": ar_name,
+                            "album": al_name
+                        }
+            except Exception as e:
+                print(f"[batch_info] ncm /song/detail 失败: {e}", flush=True)
+
+    songs = []
+    for sid in clean_ids:
+        if sid in result_map:
+            songs.append(result_map[sid])
+        else:
+            songs.append({"id": sid, "title": f"本地歌曲 {sid}", "artist": "", "album": ""})
+
+    return jsonify({"ok": True, "songs": songs})
+
 
 @app.route("/play")
 def play():

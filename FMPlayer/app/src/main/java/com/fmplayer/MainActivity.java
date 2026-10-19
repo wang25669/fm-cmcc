@@ -17,6 +17,7 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 
 import com.fmplayer.model.SongInfo;
+import com.fmplayer.player.LocalSongStore;
 import com.fmplayer.preferences.ServerPreferences;
 import com.fmplayer.service.MusicService;
 
@@ -241,8 +242,17 @@ public class MainActivity extends AppCompatActivity {
 
             updateModeButtons(mode, isOffline);
 
-            if (title  != null && !title.isEmpty())  tvTitle.setText(title);
-            if (artist != null && !artist.isEmpty())  tvArtist.setText(artist);
+            if (title != null && !title.isEmpty() && !LocalSongStore.isGarbage(title)) {
+                tvTitle.setText(title);
+            } else {
+                tvTitle.setText(isOffline ? "本地歌曲" : "私人FM");
+            }
+
+            if (artist != null && !artist.isEmpty() && !LocalSongStore.isGarbage(artist)) {
+                tvArtist.setText(artist);
+            } else {
+                tvArtist.setText(isOffline ? "本地音乐" : "");
+            }
 
             if (status != null && !status.isEmpty()) {
                 tvStatus.setVisibility(View.VISIBLE); tvStatus.setText(status);

@@ -182,15 +182,24 @@ public class MusicService extends Service {
         // 后台扫描本地缓存，补全本地歌曲索引（兼容既有的 500MB 文件）并刷新离线播放列表
         executor.submit(() -> {
             refreshOfflinePlaylist();
-            if (!isOfflineMode && ServerPreferences.get(MusicService.this).isConfigured()) {
-                try {
-                    String remoteMode = BackendClient.get(MusicService.this).getMode();
-                    if (remoteMode != null && !remoteMode.isEmpty()) {
-                        currentFmMode = remoteMode;
-                        ServerPreferences.get(MusicService.this).setLastMode(remoteMode);
-                        handler.post(() -> broadcast(""));
-                    }
-                } catch (Exception ignored) {}
+            if (ServerPreferences.get(MusicService.this).isConfigured()) {
+                // 检查是否有缺失元数据的本地歌曲，批量向后端拉取并修复
+                int updated = LocalSongStore.get(MusicService.this).syncMissingWithBackend();
+                if (updated > 0) {
+                    refreshOfflinePlaylist();
+                    handler.post(MusicService.this::checkAndUpdateCurrentSong);
+                }
+
+                if (!isOfflineMode) {
+                    try {
+                        String remoteMode = BackendClient.get(MusicService.this).getMode();
+                        if (remoteMode != null && !remoteMode.isEmpty()) {
+                            currentFmMode = remoteMode;
+                            ServerPreferences.get(MusicService.this).setLastMode(remoteMode);
+                            handler.post(() -> broadcast(""));
+                        }
+                    } catch (Exception ignored) {}
+                }
             }
         });
 
@@ -534,10 +543,23 @@ public class MusicService extends Service {
         currentFmMode = mode;
         ServerPreferences.get(this).setLastMode(mode);
 
+        // 丢弃未播放的旧模式预取歌曲，确保下一次切歌必是新模式
+        synchronized (SESSION_HISTORY) {
+            while (SESSION_HISTORY.size() > currentIndex + 1) {
+                SESSION_HISTORY.remove(SESSION_HISTORY.size() - 1);
+            }
+        }
+
         executor.submit(() -> {
             try {
                 BackendClient.get(MusicService.this).setMode(mode);
                 DebugLog.log("mode", "后端模式已更新为: " + mode);
+                // 后端模式切换完成且旧预取已清空后，立即在后台预取新模式的下一首
+                handler.post(() -> {
+                    if (!isOfflineMode && currentFmMode.equals(mode)) {
+                        prepareNext();
+                    }
+                });
             } catch (Exception e) {
                 DebugLog.log("mode", "向后端设置模式失败: " + e.getMessage());
             }
@@ -548,6 +570,20 @@ public class MusicService extends Service {
             fetchNew(true);
         } else {
             broadcast("已切换为" + modeLabel(mode) + "，下一首生效");
+        }
+    }
+
+    private void checkAndUpdateCurrentSong() {
+        if (currentSong != null && currentSong.id != null) {
+            SongInfo fresh = LocalSongStore.get(this).getSong(currentSong.id);
+            if (fresh != null && (!fresh.title.equals(currentSong.title) || !fresh.artist.equals(currentSong.artist))) {
+                currentSong.title = fresh.title;
+                currentSong.artist = fresh.artist;
+                currentSong.album = fresh.album;
+                updateMediaSessionMetadata();
+                updateNotification();
+                broadcast("");
+            }
         }
     }
 
@@ -610,6 +646,7 @@ public class MusicService extends Service {
 
         final long startMs      = System.currentTimeMillis();
         final int  myGeneration = playGeneration;
+        final String requestMode = currentFmMode;
 
         executor.submit(() -> {
             SongInfo fetched = null;
@@ -638,6 +675,12 @@ public class MusicService extends Service {
                 fetchInFlight = false;
                 boolean playIt = pendingPlay;   // 期间用户按过下一首的话，这里是 true
                 pendingPlay = false;
+
+                // 如果是后台预取，但在等待期间用户已经切换了模式，丢弃旧模式的预取结果
+                if (!playIt && !currentFmMode.equals(requestMode)) {
+                    DebugLog.log("BackendClient.next", "丢弃旧模式(" + requestMode + ")后台预取结果");
+                    return;
+                }
 
                 if (err != null) {
                     // 预取失败无害：用户真按到下一首时会再要一次。

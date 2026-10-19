@@ -7,11 +7,15 @@ import com.fmplayer.model.SongInfo;
 import com.fmplayer.network.DebugLog;
 import com.fmplayer.preferences.ServerPreferences;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.net.URLEncoder;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import okhttp3.MediaType;
@@ -243,6 +247,52 @@ public class BackendClient {
             return new JSONObject(resp.body().string()).optInt("status", -1);
         } catch (Exception e) {
             throw new IOException("check 失败: " + e.getMessage());
+        }
+    }
+
+    // ── 批量获取歌曲元数据 ──────────────────────────────────────────
+
+    /**
+     * 向后端批量获取歌曲元数据（用于补全本地离线缓存的歌名和歌手）。
+     * 后端优先从移动云盘文件名解析，并结合网易云 /song/detail 返回准确中文元数据。
+     */
+    public List<SongInfo> getSongsBatchInfo(List<String> ids) throws IOException {
+        if (ids == null || ids.isEmpty()) return Collections.emptyList();
+        try {
+            JSONArray arr = new JSONArray();
+            for (String id : ids) {
+                if (id != null && !id.trim().isEmpty()) {
+                    arr.put(id.trim());
+                }
+            }
+            if (arr.length() == 0) return Collections.emptyList();
+
+            JSONObject body = new JSONObject();
+            body.put("ids", arr);
+            Request req = new Request.Builder()
+                    .url(base() + "/songs/batch_info")
+                    .post(RequestBody.create(JSON, body.toString()))
+                    .build();
+            try (Response resp = AppOkHttpClient.get().newCall(req).execute()) {
+                if (!resp.isSuccessful()) throw new IOException("HTTP " + resp.code());
+                String s = resp.body() != null ? resp.body().string() : "{}";
+                JSONObject o = new JSONObject(s);
+                JSONArray list = o.optJSONArray("songs");
+                List<SongInfo> res = new ArrayList<>();
+                if (list != null) {
+                    for (int i = 0; i < list.length(); i++) {
+                        JSONObject item = list.optJSONObject(i);
+                        if (item != null) {
+                            res.add(SongInfo.fromJson(item));
+                        }
+                    }
+                }
+                return res;
+            }
+        } catch (IOException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IOException("getSongsBatchInfo 失败: " + e.getMessage());
         }
     }
 
