@@ -41,7 +41,7 @@
             android:backgroundTint="@color/bg_card"/>
 
         <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:text="探索=推新内容；默认=常规私人FM；熟悉=偏老歌。切换后下一首生效"
+            android:text="细分场景与曲风定制（纯音乐/慢摇/民谣/爵士/粤语等）。首页可切回基础模式"
             android:textColor="@color/text_secondary" android:textSize="11sp"
             android:layout_marginTop="4dp" android:layout_marginBottom="12dp"/>
 

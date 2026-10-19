@@ -66,10 +66,16 @@ public class BackendClient {
 
     private String base() { return prefs.getBackendUrl().trim().replaceAll("/+$", ""); }
 
+    private Request.Builder reqBuilder(String url) {
+        return new Request.Builder()
+                .url(url)
+                .header("X-Client-Id", prefs.getClientId());
+    }
+
     // ── 获取下一首（阻塞，后端最多处理 240s）─────────────────────────────
 
     public SongInfo next() throws IOException {
-        Request req = new Request.Builder().url(base() + "/next").build();
+        Request req = reqBuilder(base() + "/next").build();
         long startMs = System.currentTimeMillis();
         try (Response resp = longPoll().newCall(req).execute()) {
             String body = resp.body().string();
@@ -94,8 +100,7 @@ public class BackendClient {
             JSONObject body = new JSONObject();
             body.put("id", songId);
             body.put("seconds", seconds);
-            Request req = new Request.Builder()
-                    .url(base() + "/played")
+            Request req = reqBuilder(base() + "/played")
                     .post(RequestBody.create(JSON, body.toString()))
                     .build();
             AppOkHttpClient.get().newCall(req).execute().close();
@@ -116,8 +121,7 @@ public class BackendClient {
             JSONObject body = new JSONObject();
             body.put("id", songId);
             body.put("like", like);
-            Request req = new Request.Builder()
-                    .url(base() + "/like")
+            Request req = reqBuilder(base() + "/like")
                     .post(RequestBody.create(JSON, body.toString()))
                     .build();
             try (Response resp = AppOkHttpClient.get().newCall(req).execute()) {
@@ -139,8 +143,7 @@ public class BackendClient {
         try {
             JSONObject body = new JSONObject();
             body.put("id", songId);
-            Request req = new Request.Builder()
-                    .url(base() + "/trash")
+            Request req = reqBuilder(base() + "/trash")
                     .post(RequestBody.create(JSON, body.toString()))
                     .build();
             try (Response resp = AppOkHttpClient.get().newCall(req).execute()) {
@@ -158,12 +161,12 @@ public class BackendClient {
 
     // ── 私人FM推荐模式：查看/切换 ──────────────────────────────────────────
     //
-    // 模式存在后端 /data/fm_mode.txt（服务端持久化），App 只是读写它。
+    // 模式存在后端 /data/users.json（服务端持久化），App 只是读写它。
     // 同步阻塞调用，务必在后台线程里调。
 
     /** 当前模式。返回 null 表示读取失败。 */
     public String getMode() throws IOException {
-        Request req = new Request.Builder().url(base() + "/mode").build();
+        Request req = reqBuilder(base() + "/mode").build();
         try (Response resp = AppOkHttpClient.get().newCall(req).execute()) {
             if (!resp.isSuccessful()) throw new IOException("HTTP " + resp.code());
             return new JSONObject(resp.body().string()).optString("mode", null);
@@ -179,8 +182,7 @@ public class BackendClient {
         try {
             JSONObject body = new JSONObject();
             body.put("mode", mode);
-            Request req = new Request.Builder()
-                    .url(base() + "/mode")
+            Request req = reqBuilder(base() + "/mode")
                     .post(RequestBody.create(JSON, body.toString()))
                     .build();
             try (Response resp = AppOkHttpClient.get().newCall(req).execute()) {
@@ -207,8 +209,7 @@ public class BackendClient {
         // /\:*?"<>| 这几个字符，& # + 这些在 URL 查询串里有特殊含义的都会原样保留——
         // 遇到 "Simon & Garfunkel" 这种歌手名，不转义就会把查询串截断，
         // 后端收到的 filename 只剩半截，直接 500。
-        Request req = new Request.Builder()
-                .url(base() + "/play?filename=" + enc(filename) + "&id=" + enc(songId)).build();
+        Request req = reqBuilder(base() + "/play?filename=" + enc(filename) + "&id=" + enc(songId)).build();
         try (Response resp = AppOkHttpClient.get().newCall(req).execute()) {
             if (!resp.isSuccessful()) throw new IOException("HTTP " + resp.code());
             return new JSONObject(resp.body().string()).optString("stream_url");
@@ -231,7 +232,7 @@ public class BackendClient {
 
     /** 返回 {key, qr_image(base64)} */
     public JSONObject getQrCode() throws IOException {
-        Request req = new Request.Builder().url(base() + "/auth/qr").build();
+        Request req = reqBuilder(base() + "/auth/qr").build();
         try (Response resp = AppOkHttpClient.get().newCall(req).execute()) {
             return new JSONObject(resp.body().string());
         } catch (Exception e) {
@@ -241,8 +242,7 @@ public class BackendClient {
 
     /** 返回扫码状态码：801=等待 802=已扫 803=成功 800=过期 */
     public int checkQrStatus(String key) throws IOException {
-        Request req = new Request.Builder()
-                .url(base() + "/auth/check?key=" + key).build();
+        Request req = reqBuilder(base() + "/auth/check?key=" + key).build();
         try (Response resp = AppOkHttpClient.get().newCall(req).execute()) {
             return new JSONObject(resp.body().string()).optInt("status", -1);
         } catch (Exception e) {
@@ -269,8 +269,7 @@ public class BackendClient {
 
             JSONObject body = new JSONObject();
             body.put("ids", arr);
-            Request req = new Request.Builder()
-                    .url(base() + "/songs/batch_info")
+            Request req = reqBuilder(base() + "/songs/batch_info")
                     .post(RequestBody.create(JSON, body.toString()))
                     .build();
             try (Response resp = AppOkHttpClient.get().newCall(req).execute()) {
@@ -299,7 +298,7 @@ public class BackendClient {
     // ── 健康检查 ──────────────────────────────────────────────────────────
 
     public JSONObject health() throws IOException {
-        Request req = new Request.Builder().url(base() + "/health").build();
+        Request req = reqBuilder(base() + "/health").build();
         try (Response resp = AppOkHttpClient.get().newCall(req).execute()) {
             return new JSONObject(resp.body().string());
         } catch (Exception e) {

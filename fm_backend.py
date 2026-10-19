@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 """
-FM Backend — 统一后端服务（简化版：不维护预取队列，按需实时处理）
+FM Backend — 统一后端服务（支持多客户端多用户、共享云盘并发防重、细分场景曲风模式）
 
-流程完全同步、透明：
-  客户端 /next
-    → 找网易云私人FM下一首候选
-    → 查移动云盘上是否已有这首歌（内存索引，零网络开销）
-    → 有：直接现拿一条新鲜直链返回
-    → 没有：从网易云下载 → 上传移动云盘 → 现拿新鲜直链返回
-    → 直链永远是这次请求里现生成的，不存在"提前生成后过期"的问题
-
-Android 客户端只需配置本服务地址，调用 /next 获取歌曲信息并播放。
+核心特性：
+  1. 多客户端多用户隔离：每个客户端分配独立 Client ID，绑定独立的网易云 Cookie 与推荐模式，
+     拥有完全独立的后台预取池，彻底避免多用户切歌相互串味。
+  2. 共享云盘与单曲 Single-flight 并发防重：
+     OpenList/移动云盘音乐目录全局共享；当多个客户端同时遇到一首云盘未缓存的新歌时，
+     按歌曲 ID 互斥锁（Single-flight + Double-checked locking）保证仅下载上传一次，并发端直接复用。
+  3. 细分场景/曲风模式支持：
+     支持基础模式（DEFAULT、EXPLORE、COMMUTE、FAMILIAR）与 9 种专属细分场景曲风
+     （FOCUS、EXERCISE、NIGHT_EMO、MANYAO、FOLK、JAZZ、CHINESE、ENGLISH、YUEYU）。
+     细分模式若在上游请求异常或无推荐时，自动优雅降级回退至 DEFAULT 保证播放不中断。
+  4. 绝不提前生成直链：
+     移动云盘直链有时效性，永远在 /next 或 /play 返回给客户端的那一刻现场获取。
 """
 
-import os, re, time, threading, requests
+import os, re, time, json, threading, requests
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
@@ -26,78 +29,166 @@ OL_PASS      = os.environ.get("OL_PASSWORD",  "")
 OL_DIR       = os.environ.get("OL_MUSIC_DIR", "/移动云盘/music").rstrip("/")
 UNM_URL      = os.environ.get("UNM_URL",      "")
 UNM_ENABLED  = os.environ.get("UNM_ENABLED",  "false").lower() == "true"
-# UNM 音源优先级：按实测稳定性+速度排序，稳的快的排前面（gdmusic/msls 0.5s，
-# byfuns/unm 2s 级）；bikonoo/qijieya/qijieyaPlus 实测常卡死，压到最后当兜底。
-# 可用 UNM_SOURCES 环境变量覆盖（逗号分隔）。
 UNM_SOURCES  = [s.strip() for s in os.environ.get(
     "UNM_SOURCES",
     "gdmusic,msls,byfuns,unm,bikonoo,qijieya,qijieyaPlus"
 ).split(",") if s.strip()]
-# 单个音源的超时（秒）。unm-utils 各音源模块内部没设 axios 超时，全靠这里兜底。
 UNM_SOURCE_TIMEOUT = float(os.environ.get("UNM_SOURCE_TIMEOUT", "6"))
-COOKIE_FILE  = "/data/ncm_cookie.txt"
-MODE_FILE    = "/data/fm_mode.txt"    # 私人FM模式持久化（App 设置页可改）
-MAX_CANDIDATES_PER_NEXT = 5   # 一次/next最多尝试几个候选歌曲（防止连续遇到无法播放的歌卡死）
 
-# ── 私人FM模式 ────────────────────────────────────────────────────────────
-#
-# 上游 ncm-api（NeteaseCloudMusicApiEnhanced fork，源码 module/personal_fm_mode.js）
-# 提供 /personal/fm/mode 接口，同样打网易云 /api/v1/radio/get，但带推荐模式：
-#   DEFAULT    默认模式（裸 /personal_fm 的等效行为，顺着画像收敛，越听越窄）
-#   FAMILIAR   熟悉模式（偏老歌/听过的方向，最窄）
-#   EXPLORE    探索模式（主动推新内容，治"没新意"）
-#   COMMUTE    开车模式（网易云场景模式 submode=COMMUTE 通勤/自驾）
-#   SCENE_RCMD 场景模式通用项（默认同样配 COMMUTE）
-# 模式值来自 App，白名单校验后落盘 /data/fm_mode.txt，重启不丢。
-FM_MODES = ("DEFAULT", "FAMILIAR", "EXPLORE", "COMMUTE", "SCENE_RCMD")
+USERS_FILE   = "/data/users.json"
+COOKIE_FILE  = "/data/ncm_cookie.txt"  # 旧版兼容读取
+MODE_FILE    = "/data/fm_mode.txt"     # 旧版兼容读取
+MAX_CANDIDATES_PER_NEXT = 5            # 一次/next最多尝试候选歌曲数
+
+# ── 推荐模式定义 ──────────────────────────────────────────────────────────
+# 基础模式
+BASE_FM_MODES = ("DEFAULT", "FAMILIAR", "EXPLORE", "COMMUTE", "SCENE_RCMD")
+# 设置页细分曲风/场景模式（9种）
+SCENE_FM_MODES = (
+    "FOCUS",      # 纯音乐
+    "EXERCISE",   # 节奏
+    "NIGHT_EMO",  # 伤感
+    "MANYAO",     # 慢摇DJ
+    "FOLK",       # 民谣
+    "JAZZ",       # 爵士
+    "CHINESE",    # 华语
+    "ENGLISH",    # 欧美
+    "YUEYU",      # 粤语
+)
+FM_MODES = BASE_FM_MODES + SCENE_FM_MODES
 DEFAULT_FM_MODE = "DEFAULT"
-
-def load_fm_mode():
-    global _fm_mode
-    try:
-        with open(MODE_FILE) as f:
-            v = f.read().strip().upper()
-        _fm_mode = v if v in FM_MODES else DEFAULT_FM_MODE
-    except Exception:
-        _fm_mode = DEFAULT_FM_MODE
-
-def save_fm_mode(mode):
-    global _fm_mode
-    _fm_mode = mode
-    os.makedirs(os.path.dirname(MODE_FILE), exist_ok=True)
-    with open(MODE_FILE, "w") as f:
-        f.write(mode)
-
-_fm_mode = DEFAULT_FM_MODE
-load_fm_mode()   # import 时读盘，比在 __main__ 里读更稳（gunicorn 等多进程入口也不漏）
 
 NCM_HEADERS  = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Referer": "https://music.163.com/",
 }
 
-# ── 全局状态 ──────────────────────────────────────────────────────────────
-_cookie       = ""       # 网易云 cookie
-_ol_token     = ""       # OpenList JWT
+# ── 多用户管理与持久化 ────────────────────────────────────────────────────
+#
+# 数据保存在 /data/users.json 中，以 client_id（UUID）为主键：
+# {
+#   "uuid-xxx": {
+#     "cookie": "...",
+#     "mode": "MANYAO",
+#     "user_name": "张三",
+#     "updated_at": 1729330000.0
+#   }
+# }
+_users      = {}
+_users_lock = threading.Lock()
+_ol_token   = ""   # OpenList JWT（全局共享）
 
-# ── Cookie 持久化 ─────────────────────────────────────────────────────────
+def load_users():
+    global _users
+    with _users_lock:
+        if os.path.exists(USERS_FILE):
+            try:
+                with open(USERS_FILE, "r", encoding="utf-8") as f:
+                    _users = json.load(f)
+                print(f"[init] 已加载 {len(_users)} 个用户信息", flush=True)
+                return
+            except Exception as e:
+                print(f"[init] 读取 users.json 失败: {e}", flush=True)
 
-def load_cookie():
-    global _cookie
-    try:
-        with open(COOKIE_FILE) as f:
-            _cookie = f.read().strip()
-        print("[init] 已加载 NCM cookie", flush=True)
-    except Exception:
-        pass
+        # 首次启动或平滑迁移：若无 users.json 但存在旧版 cookie，则迁移为 default 用户
+        migrated_cookie = ""
+        migrated_mode   = DEFAULT_FM_MODE
+        if os.path.exists(COOKIE_FILE):
+            try:
+                with open(COOKIE_FILE, "r", encoding="utf-8") as f:
+                    migrated_cookie = f.read().strip()
+            except Exception:
+                pass
+        if os.path.exists(MODE_FILE):
+            try:
+                with open(MODE_FILE, "r", encoding="utf-8") as f:
+                    v = f.read().strip().upper()
+                    if v in FM_MODES:
+                        migrated_mode = v
+            except Exception:
+                pass
 
-def save_cookie(cookie):
-    global _cookie
-    _cookie = cookie
-    os.makedirs(os.path.dirname(COOKIE_FILE), exist_ok=True)
-    with open(COOKIE_FILE, "w") as f:
-        f.write(cookie)
-    print("[auth] Cookie 已保存", flush=True)
+        if migrated_cookie:
+            _users["default"] = {
+                "cookie":     migrated_cookie,
+                "mode":       migrated_mode,
+                "user_name":  "",
+                "updated_at": time.time(),
+            }
+            save_users_locked()
+            print("[init] 已将旧版单用户凭据平滑迁移为 default 用户", flush=True)
+
+def save_users_locked():
+    os.makedirs(os.path.dirname(USERS_FILE), exist_ok=True)
+    tmp = USERS_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(_users, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, USERS_FILE)
+
+def get_client_id(req):
+    """从请求头 X-Client-Id、URL 参数或 JSON Body 中提取客户端标识，缺省回退到 default"""
+    cid = req.headers.get("X-Client-Id")
+    if not cid:
+        cid = req.args.get("client_id")
+    if not cid:
+        try:
+            body = req.get_json(silent=True)
+            if isinstance(body, dict):
+                cid = body.get("client_id")
+        except Exception:
+            pass
+    cid = str(cid).strip() if cid else ""
+    return cid or "default"
+
+def get_user_cookie(client_id):
+    with _users_lock:
+        u = _users.get(client_id)
+        if u and u.get("cookie"):
+            return u["cookie"]
+        # 向后兼容：若特定 client_id 尚无凭据但存在 default 用户，则回退尝试 default
+        if client_id != "default" and "default" in _users:
+            return _users["default"].get("cookie", "")
+        return ""
+
+def get_user_mode(client_id):
+    with _users_lock:
+        u = _users.get(client_id)
+        if u and u.get("mode"):
+            return u["mode"]
+        if client_id != "default" and "default" in _users:
+            return _users["default"].get("mode", DEFAULT_FM_MODE)
+        return DEFAULT_FM_MODE
+
+def get_user_name(client_id):
+    with _users_lock:
+        u = _users.get(client_id)
+        if u and u.get("user_name"):
+            return u["user_name"]
+        if client_id != "default" and "default" in _users:
+            return _users["default"].get("user_name", "")
+        return ""
+
+def save_user_cookie(client_id, cookie, user_name=""):
+    with _users_lock:
+        u = _users.get(client_id, {})
+        u["cookie"] = cookie
+        if user_name:
+            u["user_name"] = user_name
+        if "mode" not in u:
+            u["mode"] = DEFAULT_FM_MODE
+        u["updated_at"] = time.time()
+        _users[client_id] = u
+        save_users_locked()
+    print(f"[auth] 用户 {client_id} Cookie 已保存 (用户名: {user_name})", flush=True)
+
+def save_user_mode(client_id, mode):
+    with _users_lock:
+        u = _users.get(client_id, {})
+        u["mode"] = mode
+        u["updated_at"] = time.time()
+        _users[client_id] = u
+        save_users_locked()
+    print(f"[mode] 用户 {client_id} 模式已保存: {mode}", flush=True)
 
 # ── OpenList 工具 ─────────────────────────────────────────────────────────
 
@@ -120,12 +211,6 @@ def ol_post(path, body):
     for _ in range(2):
         r = requests.post(f"{OL_URL}{path}", json=body,
                           headers={"Authorization": _ol_token}, timeout=15)
-        # OpenList 的鉴权失败有两种表现，必须都认：
-        #   1) HTTP 401
-        #   2) HTTP 200，但 body 里 code==401（token 过期/失效走的是这条！
-        #      实测返回 {"code":401,"message":"token is invalidated/expired"}）
-        # 早期只判断 status_code==401，导致 token 一过期自动重登录从不触发，
-        # 只能靠重启进程续期——这正是"跑几天后 /next 全部 token is expired"的根因。
         if r.status_code != 401:
             try:
                 data = r.json()
@@ -136,7 +221,6 @@ def ol_post(path, body):
                 r.raise_for_status()
                 return data
             last = data.get("message")
-        # 走到这里 = 鉴权失效，重登录后重试一次
         print(f"[ol] token 失效（{last or 'HTTP 401'}），重新登录", flush=True)
         ol_login()
     raise RuntimeError(f"OpenList 鉴权连续失败: {last or '401'}")
@@ -144,19 +228,14 @@ def ol_post(path, body):
 def ol_get_url(filename):
     """
     实时获取移动云盘直链。
-    每次调用都是新鲜的一次性请求，绝不缓存，绝不提前生成——
-    这是解决"直链提前生成后过期"这个问题的根本方式。
+    每次调用都是新鲜的一次性请求，绝不缓存，绝不提前生成。
     """
     d = ol_post("/api/fs/link", {"path": f"{OL_DIR}/{filename}", "password": ""})
     if d.get("code") != 200:
         raise RuntimeError(f"获取直链失败: {d.get('message')}")
     return d["data"]["url"]
 
-# ── ID索引：启动时建一次，之后增量更新，不做周期性扫描 ────────────────────
-#
-# 唯一命名格式：歌手-歌名-ID.mp3
-# 手动往云盘丢文件也要按这个格式命名，否则识别不出 ID，会被当成
-# "云盘上没有"从而重复下载重复上传。
+# ── ID 索引：共享云盘文件索引 ──────────────────────────────────────────────
 
 ID_PATTERN = re.compile(r'-(\d+)\.mp3$', re.IGNORECASE)
 
@@ -193,21 +272,11 @@ def build_index():
         print(f"[index] 建立索引失败: {e}", flush=True)
 
 def find_existing_filename(song_id):
-    """
-    查索引。索引没建起来时先补建一次再查。
-
-    原来这里是「没建好就直接返回 None」——如果容器启动那一刻 OpenList
-    还没起来（docker compose 里两个服务没有依赖顺序，NAS 上的 OpenList
-    更是完全独立的进程），build_index() 会失败并且**永远不会再重试**，
-    _index_built 就一直是 False。后果不是"慢一点"，而是每一首歌都判定为
-    "云盘上没有"，于是全部重新下载重新上传——云盘上很快堆满同一首歌的
-    重复文件，而且每次 /next 都要多花几十秒。
-    """
     with _index_lock:
         if _index_built:
             return _index.get(song_id)
 
-    build_index()          # 补建（内部自己捕获异常，失败就还是空索引）
+    build_index()
 
     with _index_lock:
         return _index.get(song_id) if _index_built else None
@@ -225,15 +294,16 @@ def make_filename(song):
 
 # ── 网易云工具 ────────────────────────────────────────────────────────────
 
-def ncm_get(path, **params):
-    params["cookie"]    = _cookie
-    params["timestamp"] = int(time.time() * 1000)
+def ncm_get(path, cookie="", **params):
+    if cookie:
+        params["cookie"] = cookie
+    params["timestamp"]  = int(time.time() * 1000)
     r = requests.get(f"{NCM_URL}{path}", params=params, timeout=20)
     r.raise_for_status()
     return r.json()
 
-def ncm_song_url(song_id):
-    data = ncm_get("/song/url/v1", id=song_id, level="standard")
+def ncm_song_url(song_id, cookie=""):
+    data = ncm_get("/song/url/v1", cookie=cookie, id=song_id, level="standard")
     item = (data.get("data") or [{}])[0]
     url  = item.get("url") or ""
 
@@ -248,13 +318,6 @@ def try_unm(song_id, reason):
     if not UNM_ENABLED or not UNM_URL:
         raise RuntimeError(f"{reason}（UNM 未启用）")
     base = UNM_URL.rstrip("/")
-    # 逐个音源用 ?source= 显式指定，每个独立短超时，一个卡住不拖累其他。
-    # 不走 unm-utils 默认的「无 source 遍历」——它按文件名顺序(bikonoo 打头)
-    # 挨个试，且每个音源模块内部都没给 axios 设超时（axios 默认无限等待）。
-    # 只要打头的 bikonoo 这类上游挂了就整体卡死，fm 这边 timeout 一到就
-    # 解锁失败，哪怕后面的 gdmusic/msls 秒回也轮不到。实测(2026-08-16)：
-    # gdmusic 0.5s / msls 0.5s / byfuns 2s / unm 2.4s 均正常；
-    # bikonoo / qijieya / qijieyaPlus 全部卡死 8s+。
     last_err = ""
     for src in UNM_SOURCES:
         try:
@@ -272,22 +335,40 @@ def try_unm(song_id, reason):
             continue
     raise RuntimeError(f"{reason}（UNM 所有音源均失败，最后：{last_err}）")
 
-def ncm_fetch_fm():
-    """拉取私人FM歌单候选（一般返回1-3首）。
-
-    模式来自 /mode 接口（App 设置页可改）。DEFAULT 走裸 /personal_fm；
-    其他模式走 /personal/fm/mode（源码 personal_fm_mode.js，上游同样打
-    /api/v1/radio/get，只是多带 mode/submode/limit）。limit 固定 3，
-    与上游 personal_fm_mode.js 的默认一致。
+def ncm_fetch_fm(client_id):
     """
-    if _fm_mode == DEFAULT_FM_MODE:
-        data = ncm_get("/personal_fm")
-    elif _fm_mode in ("COMMUTE", "SCENE_RCMD"):
-        data = ncm_get("/personal/fm/mode", mode="SCENE_RCMD", submode="COMMUTE", limit=3)
+    拉取指定客户端私人FM候选歌曲（1-3首）。
+    按 client_id 隔离各自的 Cookie 与推荐模式。
+    细分模式（如 MANYAO、FOLK 等）走 /personal/fm/mode 带 SCENE_RCMD 与 submode；
+    若上游异常则自动优雅降级回退至 DEFAULT 默认私人FM，保证播放不断流。
+    """
+    cookie = get_user_cookie(client_id)
+    if not cookie:
+        raise RuntimeError("网易云尚未登录")
+
+    mode = get_user_mode(client_id)
+
+    data = None
+    if mode == "DEFAULT":
+        data = ncm_get("/personal_fm", cookie=cookie)
+    elif mode in ("COMMUTE", "SCENE_RCMD"):
+        data = ncm_get("/personal/fm/mode", cookie=cookie, mode="SCENE_RCMD", submode="COMMUTE", limit=3)
+    elif mode in ("FAMILIAR", "EXPLORE"):
+        data = ncm_get("/personal/fm/mode", cookie=cookie, mode=mode, limit=3)
+    elif mode in SCENE_FM_MODES:
+        try:
+            data = ncm_get("/personal/fm/mode", cookie=cookie, mode="SCENE_RCMD", submode=mode, limit=3)
+            if data.get("code") != 200 or not (data.get("data") or []):
+                raise RuntimeError(f"上游返回 code={data.get('code')}")
+        except Exception as e:
+            print(f"[fm] [{client_id}] 细分模式 {mode} 拉取失败（{e}），降级回退至 DEFAULT 模式", flush=True)
+            data = ncm_get("/personal_fm", cookie=cookie)
     else:
-        data = ncm_get("/personal/fm/mode", mode=_fm_mode, limit=3)
+        data = ncm_get("/personal_fm", cookie=cookie)
+
     if data.get("code") != 200:
-        raise RuntimeError(f"personal_fm({ _fm_mode }) 失败: {data.get('message')}")
+        raise RuntimeError(f"personal_fm({mode}) 失败: {data.get('message')}")
+
     songs = []
     for item in data.get("data") or []:
         artists = item.get("artists") or []
@@ -300,168 +381,186 @@ def ncm_fetch_fm():
         })
     return songs
 
-# ── 核心：确保一首歌在移动云盘，返回新鲜直链 ─────────────────────────────
+# ── 核心：单曲并发防重上传（Single-flight per song ID）───────────────────
+#
+# 多个客户端同时遇到一首云盘未缓存的新歌时：
+# 维护正在处理的歌曲锁字典。第一个线程负责下载与上传，其余并发线程阻塞等待其完成，
+# 完成后通过 Double-checked locking 直接复用结果，绝不发生重复下载和覆盖上传。
 
-def ensure_uploaded(song):
+_upload_locks      = {}
+_upload_locks_lock = threading.Lock()
+
+def ensure_uploaded(song, cookie=""):
     """
-    确保一首歌已经躺在移动云盘上，返回它的文件名。
-    只做"搬运"，**不碰直链**——直链的生成必须留在真正要返回给客户端的那次
-    请求里，这是这个项目从头到尾的铁律（提前生成的直链会过期）。
+    确保一首歌已经存在于移动云盘上，返回它的文件名。
+    并发安全：同一 song_id 同一时间只有一个线程执行实际搬运。
     """
     sid = song["id"]
 
+    # 1. 快速检查已建立的索引
     filename = find_existing_filename(sid)
     if filename:
         print(f"[match] 已存在: {filename}", flush=True)
         return filename
 
-    filename = make_filename(song)
-    ncm_url  = ncm_song_url(sid)
-    print(f"[upload] 开始: {filename}", flush=True)
+    # 2. 获取该歌曲维度的互斥单飞锁
+    with _upload_locks_lock:
+        if sid not in _upload_locks:
+            _upload_locks[sid] = threading.Lock()
+        song_lock = _upload_locks[sid]
 
-    resp = requests.get(ncm_url, headers=NCM_HEADERS, timeout=60)
-    resp.raise_for_status()
-    content = resp.content
-    print(f"[upload] 下载 {len(content)} bytes", flush=True)
+    with song_lock:
+        # 3. Double-checked locking：排队等待醒来后再次检查索引，可能前序线程已经上传完毕
+        filename = find_existing_filename(sid)
+        if filename:
+            print(f"[match] 并发复用已上传文件: {filename}", flush=True)
+            return filename
 
-    put = requests.put(
-        f"{OL_URL}/dav{OL_DIR}/{filename}",
-        data=content,
-        auth=(OL_USER, OL_PASS),
-        headers={"Content-Type": "audio/mpeg",
-                 "Content-Length": str(len(content))},
-        timeout=120,
-    )
-    if put.status_code not in (200, 201, 204):
-        raise RuntimeError(f"WebDAV PUT {put.status_code}: {put.text[:100]}")
-    print(f"[upload] 完成: {filename}", flush=True)
+        try:
+            filename = make_filename(song)
+            ncm_url  = ncm_song_url(sid, cookie=cookie)
+            print(f"[upload] 开始: {filename}", flush=True)
 
-    register_uploaded(sid, filename)
-    return filename
+            resp = requests.get(ncm_url, headers=NCM_HEADERS, timeout=60)
+            resp.raise_for_status()
+            content = resp.content
+            print(f"[upload] 下载 {len(content)} bytes", flush=True)
 
-def ensure_and_get_url(song):
-    """
-    同步处理一首歌：查索引→(下载上传)→现拿新鲜直链。
-    整个过程在一次请求里完成，直链绝不提前缓存。
-    """
-    filename = ensure_uploaded(song)
-    # 现拿一条新鲜直链——这是保证不过期的关键
+            put = requests.put(
+                f"{OL_URL}/dav{OL_DIR}/{filename}",
+                data=content,
+                auth=(OL_USER, OL_PASS),
+                headers={"Content-Type": "audio/mpeg",
+                         "Content-Length": str(len(content))},
+                timeout=120,
+            )
+            if put.status_code not in (200, 201, 204):
+                raise RuntimeError(f"WebDAV PUT {put.status_code}: {put.text[:100]}")
+            print(f"[upload] 完成: {filename}", flush=True)
+
+            register_uploaded(sid, filename)
+            return filename
+        finally:
+            with _upload_locks_lock:
+                _upload_locks.pop(sid, None)
+
+def ensure_and_get_url(song, cookie=""):
+    """同步处理一首歌：查索引/防重上传 → 现场生成新鲜直链"""
+    filename = ensure_uploaded(song, cookie=cookie)
     return {**song, "filename": filename, "stream_url": ol_get_url(filename)}
 
-# ── 后台预取：提前把下一首搬到云盘，但绝不提前生成直链 ────────────────────
+# ── 多客户端隔离后台预取 ──────────────────────────────────────────────────
 #
-# /next 的耗时几乎全在"从网易云下载整首歌 + 整首上传移动云盘"这一段，
-# 车机上表现为按下一首之后要干等十几秒。
-# 所以每次 /next 返回之后，立刻在后台线程里把再下一首也搬上云盘，
-# 下次 /next 就只剩"生成一条直链"这一个网络往返，基本是秒回。
-#
-# 预取里存的是**歌曲元数据 + 文件名**，绝不存 stream_url——
-# 直链依然由 /next 在返回前现场调用 ol_get_url() 生成。
-# 这样既拿到了提速，又完全不触碰"直链会过期"这个雷。
+# 每个 client_id 拥有独立预取槽位，互不冲突，彻底防串味。
+# 切换模式或重新扫码时立即清空该客户端的预取槽位。
 
-_prefetch        = None                 # {"song": {...}, "filename": "..."}
-_prefetch_lock   = threading.Lock()
-_prefetching     = False                # 已经有一个预取线程在跑了，别重复起
-_last_served_id  = None                 # 上一次 /next 真正返回给客户端的那首
+class UserPrefetchState:
+    def __init__(self):
+        self.lock           = threading.Lock()
+        self.prefetch       = None     # {"song": {...}, "filename": "..."}
+        self.prefetching    = False
+        self.last_served_id = None
 
-def take_prefetched():
-    """
-    取走预取结果（一次性消费）。
+_user_prefetches      = {}
+_user_prefetches_lock = threading.Lock()
 
-    这里必须再查一次"是不是刚放过的那首"：预取线程是在上一次 /next 之前
-    就启动的，它拿到的候选列表和后来同步流程实际选中的那首可能撞车，
-    不拦一下客户端会连着听到同一首歌两遍。
-    """
-    global _prefetch
-    with _prefetch_lock:
-        item, _prefetch = _prefetch, None
-        last = _last_served_id
+def get_user_prefetch_state(client_id):
+    with _user_prefetches_lock:
+        if client_id not in _user_prefetches:
+            _user_prefetches[client_id] = UserPrefetchState()
+        return _user_prefetches[client_id]
+
+def clear_prefetched(client_id):
+    state = get_user_prefetch_state(client_id)
+    with state.lock:
+        state.prefetch       = None
+        state.last_served_id = None
+    print(f"[prefetch] [{client_id}] 预取槽位已清空", flush=True)
+
+def take_prefetched(client_id):
+    state = get_user_prefetch_state(client_id)
+    with state.lock:
+        item, state.prefetch = state.prefetch, None
+        last = state.last_served_id
     if not item:
         return None
     if last and item["song"]["id"] == last:
-        print(f"[prefetch] 预取的正是刚播过的 {item['filename']}，丢弃", flush=True)
+        print(f"[prefetch] [{client_id}] 预取与刚播过的 {item['filename']} 重合，丢弃", flush=True)
         return None
     return item
 
-def _prefetch_worker(exclude_id):
-    global _prefetch, _prefetching
+def _prefetch_worker(client_id, exclude_id):
+    state = get_user_prefetch_state(client_id)
+    cookie = get_user_cookie(client_id)
     try:
-        candidates = ncm_fetch_fm()
+        candidates = ncm_fetch_fm(client_id)
         for song in candidates:
             if song["id"] == exclude_id:
                 continue
             try:
-                filename = ensure_uploaded(song)
+                filename = ensure_uploaded(song, cookie=cookie)
             except Exception as e:
-                print(f"[prefetch] 跳过 {song.get('title')}({song['id']}): {e}", flush=True)
+                print(f"[prefetch] [{client_id}] 跳过 {song.get('title')}({song['id']}): {e}", flush=True)
                 continue
-            with _prefetch_lock:
-                _prefetch = {"song": song, "filename": filename}
-            print(f"[prefetch] 已就绪: {filename}", flush=True)
+            with state.lock:
+                state.prefetch = {"song": song, "filename": filename}
+            print(f"[prefetch] [{client_id}] 预取就绪: {filename}", flush=True)
             return
-        print("[prefetch] 本轮候选没有一首能用，放弃", flush=True)
+        print(f"[prefetch] [{client_id}] 本轮无可用候选，放弃预取", flush=True)
     except Exception as e:
-        # 预取纯属锦上添花，失败了下一次 /next 走同步老路即可，绝不能影响主流程
-        print(f"[prefetch] 失败: {e}", flush=True)
+        print(f"[prefetch] [{client_id}] 预取失败: {e}", flush=True)
     finally:
-        with _prefetch_lock:
-            _prefetching = False
+        with state.lock:
+            state.prefetching = False
 
-def kick_prefetch(served_id):
-    """记下这次真正返回的是哪首，并（在没有正在跑的预取时）起一个新的预取线程。"""
-    global _prefetching, _last_served_id
-    with _prefetch_lock:
-        _last_served_id = served_id
-        if _prefetching or _prefetch is not None:
-            return          # 已经在跑、或者已经有货了，不用再起
-        _prefetching = True
-    threading.Thread(target=_prefetch_worker, args=(served_id,), daemon=True).start()
+def kick_prefetch(client_id, served_id):
+    state = get_user_prefetch_state(client_id)
+    with state.lock:
+        state.last_served_id = served_id
+        if state.prefetching or state.prefetch is not None:
+            return
+        state.prefetching = True
+    threading.Thread(target=_prefetch_worker, args=(client_id, served_id), daemon=True).start()
 
-# ── API ──────────────────────────────────────────────────────────────────
+# ── API 路由 ─────────────────────────────────────────────────────────────
 
 @app.route("/health")
 def health():
+    cid    = get_client_id(request)
+    cookie = get_user_cookie(cid)
     return jsonify({
-        "logged_in": bool(_cookie),
+        "logged_in": bool(cookie),
+        "user_name": get_user_name(cid),
         "ol_ok":     bool(_ol_token),
         "indexed":   _index_built,
+        "client_id": cid,
     })
 
 @app.route("/next")
 def next_song():
-    """
-    获取下一首可播放歌曲。
-
-    先看后台预取的那首在不在——在的话整首歌早就躺在云盘上了，
-    这里只要现生成一条直链就能返回，省掉十几秒的下载+上传。
-    没有预取就走同步老路：依次尝试网易云FM候选，遇到无法播放的
-    （无版权且无UNM兜底等）自动跳过换下一个，最多尝试
-    MAX_CANDIDATES_PER_NEXT 首，全部失败才报错。
-
-    无论走哪条路，返回前都会再起一个后台线程去预取"下下首"。
-    """
-    if not _cookie:
+    cid    = get_client_id(request)
+    cookie = get_user_cookie(cid)
+    if not cookie:
         return jsonify({"error": "网易云尚未登录"}), 401
 
-    # ── 快路径：吃掉上一轮的预取结果 ──
-    hit = take_prefetched()
+    # 快路径：吃掉属于当前客户端的预取结果
+    hit = take_prefetched(cid)
     if hit:
         try:
             entry = {**hit["song"], "filename": hit["filename"],
-                     "stream_url": ol_get_url(hit["filename"])}   # 直链依然是现生成的
-            print(f"[next] 命中预取: {hit['filename']}", flush=True)
-            kick_prefetch(hit["song"]["id"])
+                     "stream_url": ol_get_url(hit["filename"])}
+            print(f"[next] [{cid}] 命中预取: {hit['filename']}", flush=True)
+            kick_prefetch(cid, hit["song"]["id"])
             return jsonify(entry)
         except Exception as e:
-            # 只是直链没拿到，歌本身还在云盘上，退回同步老路重来
-            print(f"[next] 预取项取直链失败，回退同步流程: {e}", flush=True)
+            print(f"[next] [{cid}] 预取项取直链失败，回退同步流程: {e}", flush=True)
 
     last_error = "未知错误"
     tried = 0
 
     while tried < MAX_CANDIDATES_PER_NEXT:
         try:
-            candidates = ncm_fetch_fm()
+            candidates = ncm_fetch_fm(cid)
         except Exception as e:
             return jsonify({"error": f"获取歌单失败: {e}"}), 502
 
@@ -473,120 +572,94 @@ def next_song():
             if tried > MAX_CANDIDATES_PER_NEXT:
                 break
             try:
-                entry = ensure_and_get_url(song)
-                kick_prefetch(song["id"])
+                entry = ensure_and_get_url(song, cookie=cookie)
+                kick_prefetch(cid, song["id"])
                 return jsonify(entry)
             except Exception as e:
                 last_error = str(e)
-                print(f"[next] 跳过 {song.get('title')}({song['id']}): {e}", flush=True)
+                print(f"[next] [{cid}] 跳过 {song.get('title')}({song['id']}): {e}", flush=True)
                 continue
 
     return jsonify({"error": f"连续{tried}首都无法播放，最后错误: {last_error}"}), 502
 
 @app.route("/played", methods=["POST"])
 def played():
-    d   = request.get_json(force=True) or {}
-    sid = d.get("id", "")
-    sec = int(d.get("seconds", 0))
-    if sid and _cookie:
+    cid    = get_client_id(request)
+    cookie = get_user_cookie(cid)
+    d      = request.get_json(force=True) or {}
+    sid    = d.get("id", "")
+    sec    = int(d.get("seconds", 0))
+    if sid and cookie:
         try:
-            ncm_get("/scrobble", id=sid, sourceid=sid, time=sec)
+            ncm_get("/scrobble", cookie=cookie, id=sid, sourceid=sid, time=sec)
         except Exception:
             pass
     return jsonify({"ok": True})
 
-# ── 用户偏好回传：把车机上的显式正/负反馈写回网易云 ─────────────────────────
-#
-# 私人FM的推荐是算法根据行为数据实时调整的。之前只有 /played（scrobble）这一条
-# 弱信号——"听完了"充其量算轻微正向。真正能有力调教私人FM的是两个显式信号：
-#
-#   红心(/like)       强正向：告诉网易云"这类还要多推"
-#   垃圾桶(/fm_trash)  强负向：把这首踢出私人FM流，并降权同类，"别再推了"
-#
-# 两个上游接口地址是实测确认的（不是照搬文档）：
-#   moefurina/ncm-api 这个 Enhanced fork 里，垃圾桶的真实路径是 /fm_trash，
-#   而不是 Binaryify 原版文档写的 /personal_fm/trash（那个在本 fork 上 404）。
-#   源码 module/fm_trash.js -> /api/radio/trash/add，只读 query.id。
-#   module/like.js -> /api/radio/like，读 query.id 和 query.like('false'才取消)。
-
 @app.route("/like", methods=["POST"])
 def like():
-    """
-    红心/取消红心当前歌曲。
-    body: {"id": "歌曲ID", "like": true|false}   like 省略时默认 true(红心)
-    """
-    d   = request.get_json(force=True) or {}
-    sid = str(d.get("id", "")).strip()
+    cid    = get_client_id(request)
+    cookie = get_user_cookie(cid)
+    d      = request.get_json(force=True) or {}
+    sid    = str(d.get("id", "")).strip()
     if not sid:
         return jsonify({"ok": False, "error": "id 不能为空"}), 400
-    if not _cookie:
+    if not cookie:
         return jsonify({"ok": False, "error": "网易云尚未登录"}), 401
 
-    # 上游 like.js 判定的是字符串 'false' 才取消，其余一律视为红心。
     flag     = d.get("like", True)
     like_str = "false" if (flag is False or str(flag).lower() == "false") else "true"
     try:
-        r    = ncm_get("/like", id=sid, like=like_str)
-        code = r.get("code", -1)
-        ok   = code == 200
+        r      = ncm_get("/like", cookie=cookie, id=sid, like=like_str)
+        code   = r.get("code", -1)
+        ok     = code == 200
         action = "红心" if like_str == "true" else "取消红心"
-        print(f"[like] {action} {sid} -> code={code}", flush=True)
+        print(f"[like] [{cid}] {action} {sid} -> code={code}", flush=True)
         return jsonify({"ok": ok, "code": code, "like": like_str == "true"})
     except Exception as e:
-        print(f"[like] {sid} 失败: {e}", flush=True)
+        print(f"[like] [{cid}] {sid} 失败: {e}", flush=True)
         return jsonify({"ok": False, "error": str(e)}), 502
 
 @app.route("/trash", methods=["POST"])
 def trash():
-    """
-    把当前歌曲丢进私人FM垃圾桶（不感兴趣）。
-    body: {"id": "歌曲ID"}
-    这是对私人FM最强的负反馈——上游会把这首移出推荐流并降权同类。
-    """
-    d   = request.get_json(force=True) or {}
-    sid = str(d.get("id", "")).strip()
+    cid    = get_client_id(request)
+    cookie = get_user_cookie(cid)
+    d      = request.get_json(force=True) or {}
+    sid    = str(d.get("id", "")).strip()
     if not sid:
         return jsonify({"ok": False, "error": "id 不能为空"}), 400
-    if not _cookie:
+    if not cookie:
         return jsonify({"ok": False, "error": "网易云尚未登录"}), 401
 
     try:
-        r    = ncm_get("/fm_trash", id=sid)
+        r    = ncm_get("/fm_trash", cookie=cookie, id=sid)
         code = r.get("code", -1)
         ok   = code == 200
-        print(f"[trash] 垃圾桶 {sid} -> code={code}", flush=True)
+        print(f"[trash] [{cid}] 垃圾桶 {sid} -> code={code}", flush=True)
         return jsonify({"ok": ok, "code": code})
     except Exception as e:
-        print(f"[trash] {sid} 失败: {e}", flush=True)
+        print(f"[trash] [{cid}] {sid} 失败: {e}", flush=True)
         return jsonify({"ok": False, "error": str(e)}), 502
 
 @app.route("/mode", methods=["GET", "POST"])
 def fm_mode():
-    """
-    查看/切换私人FM推荐模式。
-    GET  -> {"ok":true,"mode":"EXPLORE","modes":[...]}
-    POST body: {"mode": "DEFAULT|FAMILIAR|EXPLORE|COMMUTE|SCENE_RCMD"}
-    模式落盘 /data/fm_mode.txt，重启不丢。切换后立即生效——立即清空
-    旧模式的后台预取，下一次 /next 100% 按新模式取歌。
-    """
+    cid     = get_client_id(request)
+    current = get_user_mode(cid)
     if request.method == "GET":
-        return jsonify({"ok": True, "mode": _fm_mode, "modes": list(FM_MODES)})
+        return jsonify({"ok": True, "mode": current, "modes": list(FM_MODES)})
 
     d    = request.get_json(force=True) or {}
     mode = str(d.get("mode", "")).strip().upper()
     if mode not in FM_MODES:
         return jsonify({"ok": False,
                         "error": f"mode 必须是 {'/'.join(FM_MODES)} 之一"}), 400
-    save_fm_mode(mode)
-    # 切换模式后立刻清空后台预取，确保下一次 /next 一定按新模式取歌
-    global _prefetch
-    with _prefetch_lock:
-        _prefetch = None
-    print(f"[mode] 私人FM模式 -> {mode}（预取已清空）", flush=True)
-    return jsonify({"ok": True, "mode": _fm_mode})
+    save_user_mode(cid, mode)
+    # 切换模式后立刻清空当前客户端预取槽位，确保下一次 /next 100% 走新模式
+    clear_prefetched(cid)
+    print(f"[mode] [{cid}] 私人FM模式 -> {mode}（预取已清空）", flush=True)
+    return jsonify({"ok": True, "mode": mode})
 
 def parse_filename_meta(filename, song_id):
-    """从移动云盘规范文件名（歌手-歌名-ID.mp3）中解析出歌手与歌名"""
     name = filename
     if name.lower().endswith(".mp3"):
         name = name[:-4]
@@ -613,14 +686,10 @@ def parse_filename_meta(filename, song_id):
 
 @app.route("/songs/batch_info", methods=["POST"])
 def songs_batch_info():
-    """
-    批量查询歌曲元数据（供车机离线缓存补全歌名、歌手）。
-    POST body: {"ids": ["123", "456", ...]}
-    返回: {"ok": true, "songs": [{"id": "123", "title": "...", "artist": "...", "album": "..."}, ...]}
-    优先使用移动云盘文件名秒级解析兜底，并尝试网易云 /song/detail 批量拉取权威元数据。
-    """
-    d   = request.get_json(force=True) or {}
-    ids = d.get("ids", [])
+    cid    = get_client_id(request)
+    cookie = get_user_cookie(cid)
+    d      = request.get_json(force=True) or {}
+    ids    = d.get("ids", [])
     if not isinstance(ids, list):
         return jsonify({"ok": False, "error": "ids 必须是列表"}), 400
 
@@ -634,19 +703,19 @@ def songs_batch_info():
 
     result_map = {}
 
-    # 1. 先用云盘索引文件名做基础解析（本地秒回，无外部网络依赖）
+    # 1. 先用云盘索引文件名秒级解析
     for sid in clean_ids:
         fname = find_existing_filename(sid)
         if fname:
             result_map[sid] = parse_filename_meta(fname, sid)
 
     # 2. 尝试从网易云 /song/detail 批量拉取权威元数据
-    if _cookie and clean_ids:
+    if cookie and clean_ids:
         batch_size = 50
         for i in range(0, len(clean_ids), batch_size):
             chunk = clean_ids[i:i + batch_size]
             try:
-                data = ncm_get("/song/detail", ids=",".join(chunk))
+                data = ncm_get("/song/detail", cookie=cookie, ids=",".join(chunk))
                 if data.get("code") == 200:
                     for item in data.get("songs") or []:
                         sid = str(item.get("id"))
@@ -662,7 +731,7 @@ def songs_batch_info():
                             "album": al_name
                         }
             except Exception as e:
-                print(f"[batch_info] ncm /song/detail 失败: {e}", flush=True)
+                print(f"[batch_info] [{cid}] ncm /song/detail 失败: {e}", flush=True)
 
     songs = []
     for sid in clean_ids:
@@ -672,7 +741,6 @@ def songs_batch_info():
             songs.append({"id": sid, "title": f"本地歌曲 {sid}", "artist": "", "album": ""})
 
     return jsonify({"ok": True, "songs": songs})
-
 
 @app.route("/play")
 def play():
@@ -708,23 +776,36 @@ def auth_qr():
 
 @app.route("/auth/check")
 def auth_check():
+    cid    = get_client_id(request)
     key    = request.args.get("key", "")
     ts     = int(time.time() * 1000)
     r      = requests.get(f"{NCM_URL}/login/qr/check",
                           params={"key": key, "timestamp": ts}, timeout=10)
     data   = r.json()
     status = data.get("code", -1)
+    user_name = ""
     if status == 803:
         cookie = data.get("cookie", "")
         if cookie:
-            save_cookie(cookie)
-    return jsonify({"status": status})
+            # 抓取用户昵称
+            try:
+                st = requests.get(f"{NCM_URL}/login/status",
+                                  params={"cookie": cookie, "timestamp": int(time.time() * 1000)},
+                                  timeout=10).json()
+                profile = (st.get("data") or {}).get("profile") or {}
+                user_name = profile.get("nickname", "")
+            except Exception as e:
+                print(f"[auth] 获取登录昵称失败: {e}", flush=True)
+            save_user_cookie(cid, cookie, user_name)
+            # 无论换号还是重新扫码，扫码成功后立即清空该客户端现存预取，彻底防串味
+            clear_prefetched(cid)
+    return jsonify({"status": status, "user_name": user_name or get_user_name(cid)})
 
 # ── 启动 ─────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     os.makedirs("/data", exist_ok=True)
-    load_cookie()
+    load_users()
     try:
         ol_login()
         build_index()

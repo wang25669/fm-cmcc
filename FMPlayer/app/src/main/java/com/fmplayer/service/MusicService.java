@@ -48,6 +48,7 @@ public class MusicService extends Service {
     public static final String ACTION_LIKE        = "com.fmplayer.LIKE";   // 红心/取消当前歌
     public static final String ACTION_TRASH       = "com.fmplayer.TRASH";  // 当前歌丢垃圾桶并跳下一首
     public static final String ACTION_SET_MODE    = "com.fmplayer.SET_MODE"; // 切换播放模式
+    public static final String ACTION_RESET_SESSION = "com.fmplayer.RESET_SESSION"; // 扫码换号后重置本地播放会话
     public static final String EXTRA_HISTORY_IDX  = "history_idx";
     public static final String EXTRA_MODE         = "fm_mode";
     public static final String EXTRA_IS_OFFLINE   = "is_offline";
@@ -241,6 +242,10 @@ public class MusicService extends Service {
                 case ACTION_SET_MODE:
                     decoderFailStreak = 0;
                     handleSetMode(intent.getStringExtra(EXTRA_MODE));
+                    break;
+                case ACTION_RESET_SESSION:
+                    decoderFailStreak = 0;
+                    handleResetSession();
                     break;
             }
         }
@@ -587,9 +592,42 @@ public class MusicService extends Service {
         }
     }
 
+    private void handleResetSession() {
+        playGeneration++;
+        fetchInFlight = false;
+        pendingPlay = false;
+        decoderFailStreak = 0;
+        synchronized (SESSION_HISTORY) {
+            SESSION_HISTORY.clear();
+        }
+        currentIndex = -1;
+        currentSong = null;
+        if (localPlayer != null) {
+            localPlayer.release();
+            localPlayer = null;
+        }
+        stopProgress();
+        updatePlaybackState(false);
+        broadcast("账号已更新，准备播放新推荐");
+        // 扫码重置后，若已配置好，则直接从新账号拉取第一首
+        if (ServerPreferences.get(this).isConfigured() && !isOfflineMode) {
+            fetchNew(true);
+        }
+    }
+
     private String modeLabel(String mode) {
         if ("EXPLORE".equalsIgnoreCase(mode)) return "探索模式";
         if ("COMMUTE".equalsIgnoreCase(mode) || "SCENE_RCMD".equalsIgnoreCase(mode)) return "开车模式";
+        if ("FAMILIAR".equalsIgnoreCase(mode)) return "熟悉模式";
+        if ("FOCUS".equalsIgnoreCase(mode)) return "纯音乐模式";
+        if ("EXERCISE".equalsIgnoreCase(mode)) return "节奏模式";
+        if ("NIGHT_EMO".equalsIgnoreCase(mode)) return "伤感模式";
+        if ("MANYAO".equalsIgnoreCase(mode)) return "慢摇DJ模式";
+        if ("FOLK".equalsIgnoreCase(mode)) return "民谣模式";
+        if ("JAZZ".equalsIgnoreCase(mode)) return "爵士模式";
+        if ("CHINESE".equalsIgnoreCase(mode)) return "华语模式";
+        if ("ENGLISH".equalsIgnoreCase(mode)) return "欧美模式";
+        if ("YUEYU".equalsIgnoreCase(mode)) return "粤语模式";
         return "默认模式";
     }
 

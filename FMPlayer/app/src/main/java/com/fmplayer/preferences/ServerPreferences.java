@@ -31,6 +31,22 @@ public class ServerPreferences {
         return !getBackendUrl().trim().isEmpty();
     }
 
+    private static final String KEY_CLIENT_ID    = "client_id";
+
+    public String getClientId() {
+        String cid = p.getString(KEY_CLIENT_ID, "");
+        if (cid == null || cid.trim().isEmpty()) {
+            cid = java.util.UUID.randomUUID().toString();
+            p.edit().putString(KEY_CLIENT_ID, cid).apply();
+        }
+        return cid;
+    }
+
+    public void resetClientId() {
+        String newCid = java.util.UUID.randomUUID().toString();
+        p.edit().putString(KEY_CLIENT_ID, newCid).apply();
+    }
+
     private static final String KEY_OFFLINE_MODE = "offline_mode";
     private static final String KEY_LAST_MODE    = "last_mode";
 

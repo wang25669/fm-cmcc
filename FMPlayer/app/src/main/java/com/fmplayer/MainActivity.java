@@ -121,9 +121,14 @@ public class MainActivity extends AppCompatActivity {
             setPillState(btnModeExplore, false);
             setPillState(btnModeDrive,   false);
         } else {
-            setPillState(btnModeDefault, "DEFAULT".equalsIgnoreCase(mode) || mode == null);
-            setPillState(btnModeExplore, "EXPLORE".equalsIgnoreCase(mode));
-            setPillState(btnModeDrive,   "COMMUTE".equalsIgnoreCase(mode) || "SCENE_RCMD".equalsIgnoreCase(mode));
+            boolean isExplore = "EXPLORE".equalsIgnoreCase(mode);
+            boolean isDrive   = "COMMUTE".equalsIgnoreCase(mode) || "SCENE_RCMD".equalsIgnoreCase(mode);
+            boolean isDefault = "DEFAULT".equalsIgnoreCase(mode);
+            // 若为 9 种细分模式之一（FOCUS、MANYAO 等），4 个药丸都不高亮
+            boolean isCustom  = mode != null && !mode.isEmpty() && !isDefault && !isExplore && !isDrive;
+            setPillState(btnModeDefault, !isCustom && (isDefault || mode == null || mode.isEmpty()));
+            setPillState(btnModeExplore, !isCustom && isExplore);
+            setPillState(btnModeDrive,   !isCustom && isDrive);
         }
     }
 
