@@ -34,9 +34,9 @@ public class SettingsActivity extends AppCompatActivity {
     private Runnable      pollRunnable;
     private boolean       ncmLoggedIn = false;
 
-    /** 设置页模式选项：value -> 显示名。SCENE_RCMD 需要配几十种 submode，App 端先不放。 */
-    private static final String[] MODE_VALUES  = {"DEFAULT", "EXPLORE", "FAMILIAR"};
-    private static final String[] MODE_LABELS  = {"默认（常规私人FM）", "探索（多推新内容）", "熟悉（偏老歌）"};
+    /** 设置页模式选项：value -> 显示名。 */
+    private static final String[] MODE_VALUES  = {"DEFAULT", "EXPLORE", "COMMUTE", "FAMILIAR"};
+    private static final String[] MODE_LABELS  = {"默认（常规私人FM）", "探索（多推新内容）", "开车（通勤出行）", "熟悉（偏老歌）"};
     private String currentMode = null;
 
     @Override

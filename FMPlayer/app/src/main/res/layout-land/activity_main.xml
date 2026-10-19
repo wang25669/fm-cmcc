@@ -41,6 +41,69 @@
             android:orientation="vertical" android:gravity="center"
             android:paddingEnd="20dp">
 
+            <!-- 模式切换栏：默认 | 探索 | 开车 | 离线（车机界面布局放在左侧歌曲信息上方） -->
+            <LinearLayout
+                android:id="@+id/ll_mode_bar"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center"
+                android:layout_marginBottom="24dp">
+
+                <TextView android:id="@+id/btn_mode_default"
+                    android:layout_width="0dp" android:layout_height="36dp"
+                    android:layout_weight="1"
+                    android:layout_marginEnd="4dp"
+                    android:background="@drawable/bg_mode_pill_normal"
+                    android:gravity="center"
+                    android:text="默认"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="14sp"
+                    android:textStyle="bold"
+                    android:clickable="true"
+                    android:focusable="true"/>
+
+                <TextView android:id="@+id/btn_mode_explore"
+                    android:layout_width="0dp" android:layout_height="36dp"
+                    android:layout_weight="1"
+                    android:layout_marginStart="4dp" android:layout_marginEnd="4dp"
+                    android:background="@drawable/bg_mode_pill_normal"
+                    android:gravity="center"
+                    android:text="探索"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="14sp"
+                    android:textStyle="bold"
+                    android:clickable="true"
+                    android:focusable="true"/>
+
+                <TextView android:id="@+id/btn_mode_drive"
+                    android:layout_width="0dp" android:layout_height="36dp"
+                    android:layout_weight="1"
+                    android:layout_marginStart="4dp" android:layout_marginEnd="4dp"
+                    android:background="@drawable/bg_mode_pill_normal"
+                    android:gravity="center"
+                    android:text="开车"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="14sp"
+                    android:textStyle="bold"
+                    android:clickable="true"
+                    android:focusable="true"/>
+
+                <TextView android:id="@+id/btn_mode_offline"
+                    android:layout_width="0dp" android:layout_height="36dp"
+                    android:layout_weight="1"
+                    android:layout_marginStart="4dp"
+                    android:background="@drawable/bg_mode_pill_normal"
+                    android:gravity="center"
+                    android:text="离线"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="14sp"
+                    android:textStyle="bold"
+                    android:clickable="true"
+                    android:focusable="true"/>
+
+            </LinearLayout>
+
             <TextView android:id="@+id/tv_title"
                 android:layout_width="match_parent" android:layout_height="wrap_content"
                 android:text="@string/loading"

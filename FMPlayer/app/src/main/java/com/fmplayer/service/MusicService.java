@@ -25,6 +25,8 @@ import com.fmplayer.network.BackendClient;
 import com.fmplayer.network.DebugLog;
 import com.fmplayer.network.Diagnostics;
 import com.fmplayer.player.LocalFilePlayer;
+import com.fmplayer.player.LocalSongStore;
+import com.fmplayer.player.SongCache;
 import com.fmplayer.preferences.ServerPreferences;
 
 import java.util.ArrayList;
@@ -45,7 +47,10 @@ public class MusicService extends Service {
     public static final String ACTION_PLAY_HISTORY= "com.fmplayer.PLAY_HISTORY";
     public static final String ACTION_LIKE        = "com.fmplayer.LIKE";   // 红心/取消当前歌
     public static final String ACTION_TRASH       = "com.fmplayer.TRASH";  // 当前歌丢垃圾桶并跳下一首
+    public static final String ACTION_SET_MODE    = "com.fmplayer.SET_MODE"; // 切换播放模式
     public static final String EXTRA_HISTORY_IDX  = "history_idx";
+    public static final String EXTRA_MODE         = "fm_mode";
+    public static final String EXTRA_IS_OFFLINE   = "is_offline";
 
     public static final String BROADCAST_STATE  = "com.fmplayer.STATE_CHANGED";
     public static final String EXTRA_TITLE      = "title";
@@ -69,14 +74,32 @@ public class MusicService extends Service {
     /** 当前播放的是 SESSION_HISTORY 中的第几首（下标）*/
     private static volatile int currentIndex = -1;
 
+    /** 当前私人FM模式：DEFAULT / EXPLORE / COMMUTE */
+    private volatile String currentFmMode = "DEFAULT";
+    /** 当前是否为离线本地播放模式 */
+    private static volatile boolean isOfflineMode = false;
+    /** 离线模式下的播放列表（来自本地磁盘与 LocalSongStore） */
+    private static final List<SongInfo> OFFLINE_PLAYLIST =
+            Collections.synchronizedList(new ArrayList<>());
+    /** 离线模式下当前播放的歌曲下标 */
+    private static volatile int offlineIndex = -1;
+
     public static List<SongInfo> getSessionHistorySnapshot() {
+        if (isOfflineMode) {
+            synchronized (OFFLINE_PLAYLIST) {
+                return new ArrayList<>(OFFLINE_PLAYLIST);
+            }
+        }
         synchronized (SESSION_HISTORY) {
             return new ArrayList<>(SESSION_HISTORY);
         }
     }
 
-    /** 当前播放项在 SESSION_HISTORY 中的下标，供 UI 高亮"正在播放"的那一行。 */
+    /** 当前播放项在当前列表中的下标，供 UI 高亮"正在播放"的那一行。 */
     public static int getCurrentIndex() {
+        if (isOfflineMode) {
+            return offlineIndex;
+        }
         return currentIndex;
     }
 
@@ -153,10 +176,37 @@ public class MusicService extends Service {
             executor.submit(() -> Diagnostics.logLocalEnvironment(MusicService.this));
         }
 
-        // 没配置后端地址就什么都别做，等用户在设置页填完再 startService。
-        // 以前这里无条件 fetchAndPlayNew()，地址是空的也照发请求，
-        // 结果是每 5 秒失败重试一次的死循环。
-        if (ServerPreferences.get(this).isConfigured()) {
+        currentFmMode = ServerPreferences.get(this).getLastMode();
+        isOfflineMode = ServerPreferences.get(this).isOfflineMode();
+
+        // 后台扫描本地缓存，补全本地歌曲索引（兼容既有的 500MB 文件）并刷新离线播放列表
+        executor.submit(() -> {
+            refreshOfflinePlaylist();
+            if (!isOfflineMode && ServerPreferences.get(MusicService.this).isConfigured()) {
+                try {
+                    String remoteMode = BackendClient.get(MusicService.this).getMode();
+                    if (remoteMode != null && !remoteMode.isEmpty()) {
+                        currentFmMode = remoteMode;
+                        ServerPreferences.get(MusicService.this).setLastMode(remoteMode);
+                        handler.post(() -> broadcast(""));
+                    }
+                } catch (Exception ignored) {}
+            }
+        });
+
+        if (isOfflineMode) {
+            handler.postDelayed(() -> {
+                if (isOfflineMode) {
+                    refreshOfflinePlaylist();
+                    if (!OFFLINE_PLAYLIST.isEmpty()) {
+                        offlineIndex = 0;
+                        playLocal(OFFLINE_PLAYLIST.get(0));
+                    } else {
+                        broadcast("本地暂无已下载歌曲");
+                    }
+                }
+            }, 300);
+        } else if (ServerPreferences.get(this).isConfigured()) {
             fetchNew(true);
         } else {
             broadcast("请先在设置里填写后端地址");
@@ -179,6 +229,10 @@ public class MusicService extends Service {
                     jumpTo(intent.getIntExtra(EXTRA_HISTORY_IDX, -1)); break;
                 case ACTION_LIKE:         likeCurrentSong();  break;
                 case ACTION_TRASH:        decoderFailStreak = 0; trashCurrentSong(); break;
+                case ACTION_SET_MODE:
+                    decoderFailStreak = 0;
+                    handleSetMode(intent.getStringExtra(EXTRA_MODE));
+                    break;
             }
         }
         return START_STICKY;
@@ -230,6 +284,11 @@ public class MusicService extends Service {
                  */
                 @Override public void onDownloadFailed(String reason) {
                     stopProgress();
+                    if (isOfflineMode) {
+                        DebugLog.log("下载失败", "离线模式本地文件缺失，跳到下一首");
+                        handler.postDelayed(MusicService.this::goNext, 1000);
+                        return;
+                    }
                     if (currentSong == null) {
                         handler.postDelayed(MusicService.this::goNext, 5000);
                         return;
@@ -372,6 +431,17 @@ public class MusicService extends Service {
      * 只有走到本地历史最前沿，才需要向后端要一首全新的歌。
      */
     private void goNext() {
+        if (isOfflineMode) {
+            synchronized (OFFLINE_PLAYLIST) {
+                if (OFFLINE_PLAYLIST.isEmpty()) {
+                    broadcast("本地暂无已下载歌曲");
+                    return;
+                }
+                offlineIndex = (offlineIndex + 1) % OFFLINE_PLAYLIST.size();
+                playLocal(OFFLINE_PLAYLIST.get(offlineIndex));
+            }
+            return;
+        }
         synchronized (SESSION_HISTORY) {
             if (currentIndex < SESSION_HISTORY.size() - 1) {
                 currentIndex++;
@@ -388,6 +458,17 @@ public class MusicService extends Service {
      * 不需要问后端要任何东西。
      */
     private void goPrev() {
+        if (isOfflineMode) {
+            synchronized (OFFLINE_PLAYLIST) {
+                if (OFFLINE_PLAYLIST.isEmpty()) {
+                    broadcast("本地暂无已下载歌曲");
+                    return;
+                }
+                offlineIndex = (offlineIndex - 1 + OFFLINE_PLAYLIST.size()) % OFFLINE_PLAYLIST.size();
+                playLocal(OFFLINE_PLAYLIST.get(offlineIndex));
+            }
+            return;
+        }
         synchronized (SESSION_HISTORY) {
             if (currentIndex > 0) {
                 currentIndex--;
@@ -400,6 +481,14 @@ public class MusicService extends Service {
 
     /** 播放列表里点选某一首，直接用本地缓存的记录 */
     private void jumpTo(int idx) {
+        if (isOfflineMode) {
+            synchronized (OFFLINE_PLAYLIST) {
+                if (idx < 0 || idx >= OFFLINE_PLAYLIST.size()) return;
+                offlineIndex = idx;
+                playLocal(OFFLINE_PLAYLIST.get(idx));
+            }
+            return;
+        }
         synchronized (SESSION_HISTORY) {
             if (idx < 0 || idx >= SESSION_HISTORY.size()) return;
             currentIndex = idx;
@@ -407,13 +496,84 @@ public class MusicService extends Service {
         }
     }
 
+    private void handleSetMode(String mode) {
+        if (mode == null || mode.isEmpty()) return;
+
+        if ("OFFLINE".equalsIgnoreCase(mode)) {
+            if (isOfflineMode) {
+                broadcast("当前已是离线模式，共 " + OFFLINE_PLAYLIST.size() + " 首本地歌曲");
+                return;
+            }
+            isOfflineMode = true;
+            ServerPreferences.get(this).setOfflineMode(true);
+            pendingPlay = false;
+
+            refreshOfflinePlaylist();
+            if (OFFLINE_PLAYLIST.isEmpty()) {
+                broadcast("本地暂无已下载歌曲");
+                return;
+            }
+            int foundIdx = 0;
+            if (currentSong != null && currentSong.id != null) {
+                for (int i = 0; i < OFFLINE_PLAYLIST.size(); i++) {
+                    if (currentSong.id.equals(OFFLINE_PLAYLIST.get(i).id)) {
+                        foundIdx = i;
+                        break;
+                    }
+                }
+            }
+            offlineIndex = foundIdx;
+            playLocal(OFFLINE_PLAYLIST.get(offlineIndex));
+            broadcast("已切换为离线模式（本地播放）");
+            return;
+        }
+
+        boolean wasOffline = isOfflineMode;
+        isOfflineMode = false;
+        ServerPreferences.get(this).setOfflineMode(false);
+        currentFmMode = mode;
+        ServerPreferences.get(this).setLastMode(mode);
+
+        executor.submit(() -> {
+            try {
+                BackendClient.get(MusicService.this).setMode(mode);
+                DebugLog.log("mode", "后端模式已更新为: " + mode);
+            } catch (Exception e) {
+                DebugLog.log("mode", "向后端设置模式失败: " + e.getMessage());
+            }
+        });
+
+        if (wasOffline) {
+            broadcast("已切换为在线模式（" + modeLabel(mode) + "）");
+            fetchNew(true);
+        } else {
+            broadcast("已切换为" + modeLabel(mode) + "，下一首生效");
+        }
+    }
+
+    private String modeLabel(String mode) {
+        if ("EXPLORE".equalsIgnoreCase(mode)) return "探索模式";
+        if ("COMMUTE".equalsIgnoreCase(mode) || "SCENE_RCMD".equalsIgnoreCase(mode)) return "开车模式";
+        return "默认模式";
+    }
+
+    private void refreshOfflinePlaylist() {
+        LocalSongStore store = LocalSongStore.get(this);
+        SongCache cache = new SongCache(this);
+        store.scanAndSync(cache);
+        List<SongInfo> list = store.getAllSongs();
+        synchronized (OFFLINE_PLAYLIST) {
+            OFFLINE_PLAYLIST.clear();
+            OFFLINE_PLAYLIST.addAll(list);
+        }
+        DebugLog.log("MusicService", "离线播放列表已刷新，共 " + OFFLINE_PLAYLIST.size() + " 首");
+    }
+
     /**
      * 当前歌开播后，把下一首准备好：先向后端要歌曲信息，再后台把文件下下来。
-     *
-     * 这一步让"下载完再播"用起来不比流式慢——用户按下一首时，
-     * 歌曲信息和音频文件通常都已经在本地了，是瞬间开始。
      */
     private void prepareNext() {
+        if (isOfflineMode) return; // 离线模式全在本地，无需网络预取
         synchronized (SESSION_HISTORY) {
             // 后面已经有歌了（用户之前按过上一首，现在正往回走），
             // 那"下一首"是本地已知的，只需要确保它的文件下好。
@@ -433,6 +593,7 @@ public class MusicService extends Service {
      *                false = 后台预取，只把信息和文件备好，不打断当前播放
      */
     private void fetchNew(boolean playNow) {
+        if (isOfflineMode) return;
         if (fetchInFlight) {
             // 已经有一个请求在飞了。如果那是后台预取而用户此刻按了下一首，
             // 记一笔，等它回来直接播——绝不能再发一次 /next，
@@ -486,10 +647,17 @@ public class MusicService extends Service {
                         return;
                     }
                     if (myGeneration != playGeneration) return;
-                    broadcast("加载失败: " + err.getMessage());
-                    handler.postDelayed(() -> fetchNew(true), 5000);
+                    if (LocalSongStore.get(MusicService.this).count() > 0) {
+                        broadcast("网络连接异常，可点击【离线】收听本地歌曲");
+                    } else {
+                        broadcast("加载失败: " + err.getMessage());
+                    }
+                    handler.postDelayed(() -> fetchNew(true), 8000);
                     return;
                 }
+
+                // 成功获取新歌曲，保存到本地元数据持久化索引
+                LocalSongStore.get(MusicService.this).saveSong(song);
 
                 // 追加到历史末尾。这一步对预取很关键：
                 // 用户按下一首时 goNext() 会在历史里发现它，直接本地播放，
@@ -540,17 +708,18 @@ public class MusicService extends Service {
                 " url前缀=" + (song.streamUrl != null && song.streamUrl.length() > 60
                         ? song.streamUrl.substring(0, 60) : song.streamUrl));
         currentSong = song;
+        LocalSongStore.get(this).saveSong(song);
         updateMediaSessionMetadata();
         localPlayer().play(song.id, song.streamUrl);
         broadcast("");
     }
 
     private void onSongEnded() {
+        if (isOfflineMode) {
+            goNext();
+            return;
+        }
         if (currentSong != null) {
-            // 必须扔到后台线程：played() 是同步 OkHttp 调用，而这里是主线程
-            // （MediaPlayer 的 onCompletion 回调在主线程）。
-            // 它内部 catch(Exception) 会把 NetworkOnMainThreadException 一并吞掉，
-            // 所以这个上报一直是静默失败的，日志里连个响都没有。
             final String id   = currentSong.id;
             final int    secs = (int) (enginePosition() / 1000);
             executor.submit(() -> BackendClient.get(MusicService.this).played(id, secs));
@@ -559,16 +728,7 @@ public class MusicService extends Service {
     }
 
     // ── 私人FM反馈：红心 / 垃圾桶 ─────────────────────────────────────────
-    //
-    // 这两个动作是回传给网易云、直接调教私人FM推荐流的显式信号，比 scrobble
-    // 那条弱信号有力得多。网络调用一律扔后台线程（OkHttp 同步调用，主线程会抛
-    // NetworkOnMainThreadException）。UI 的按钮态靠广播里的 EXTRA_LIKED 驱动。
 
-    /**
-     * 红心/取消红心当前歌。
-     * 先乐观翻转本地 liked 态并立即广播（按钮马上有反馈），再后台请求；
-     * 请求失败就回滚并提示——避免让用户以为红心成功了其实没写进网易云。
-     */
     private void likeCurrentSong() {
         final SongInfo song = currentSong;
         if (song == null || song.id == null || song.id.isEmpty()) {
@@ -578,6 +738,11 @@ public class MusicService extends Service {
         final boolean target = !song.liked;   // 目标态：当前没红心就去红心，反之取消
         song.liked = target;                   // 乐观更新
         broadcast(target ? "已喜欢" : "已取消喜欢");
+
+        if (isOfflineMode) {
+            broadcast(target ? "离线模式：已在本地标记喜欢" : "离线模式：已取消标记喜欢");
+            return;
+        }
 
         final int myGeneration = playGeneration;
         executor.submit(() -> {
@@ -592,27 +757,18 @@ public class MusicService extends Service {
             final String  errMsg  = err;
             handler.post(() -> {
                 if (!success) {
-                    // 回滚。若期间用户已切歌(代次变了)，song 可能已不是当前歌，
-                    // 直接改 song.liked 即可，广播以 currentSong 为准不会串。
                     song.liked = !target;
                     DebugLog.log("like", "回传失败，已回滚: " + (errMsg != null ? errMsg : "后端拒绝"));
                     if (myGeneration == playGeneration) {
                         broadcast(target ? "喜欢失败" : "取消失败");
                     }
                 } else if (myGeneration == playGeneration) {
-                    broadcast("");   // 成功，清掉临时状态文字，按钮态已是红心
+                    broadcast("");
                 }
             });
         });
     }
 
-    /**
-     * 把当前歌丢进私人FM垃圾桶（不感兴趣），然后跳下一首。
-     *
-     * 用户点"不感兴趣"的意图是"这首立刻别放了"，所以无论上游回传成功与否
-     * 都会跳歌——回传只是把负反馈告诉网易云去调教推荐流，跳歌是本地体验，
-     * 两者互不阻塞。跳歌用 goNext()，走的还是"本地列表优先、越界才请求"的老路。
-     */
     private void trashCurrentSong() {
         final SongInfo song = currentSong;
         if (song == null || song.id == null || song.id.isEmpty()) {
@@ -621,13 +777,15 @@ public class MusicService extends Service {
         }
         final String sid = song.id;
         broadcast("已加入不感兴趣");
-        executor.submit(() -> {
-            try {
-                BackendClient.get(MusicService.this).trash(sid);
-            } catch (Exception e) {
-                DebugLog.log("trash", "回传失败(不影响跳歌): " + e.getMessage());
-            }
-        });
+        if (!isOfflineMode) {
+            executor.submit(() -> {
+                try {
+                    BackendClient.get(MusicService.this).trash(sid);
+                } catch (Exception e) {
+                    DebugLog.log("trash", "回传失败(不影响跳歌): " + e.getMessage());
+                }
+            });
+        }
         // 立即跳下一首，不等回传结果
         goNext();
     }
@@ -660,6 +818,8 @@ public class MusicService extends Service {
         i.putExtra(EXTRA_STATUS,     status != null ? status : "");
         i.putExtra(EXTRA_SONG_ID,    currentSong != null ? currentSong.id : "");
         i.putExtra(EXTRA_LIKED,      currentSong != null && currentSong.liked);
+        i.putExtra(EXTRA_MODE,       currentFmMode);
+        i.putExtra(EXTRA_IS_OFFLINE, isOfflineMode);
         LocalBroadcastManager.getInstance(this).sendBroadcast(i);
     }
 

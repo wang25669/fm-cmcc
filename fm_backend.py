@@ -43,12 +43,13 @@ MAX_CANDIDATES_PER_NEXT = 5   # 一次/next最多尝试几个候选歌曲（防�
 #
 # 上游 ncm-api（NeteaseCloudMusicApiEnhanced fork，源码 module/personal_fm_mode.js）
 # 提供 /personal/fm/mode 接口，同样打网易云 /api/v1/radio/get，但带推荐模式：
-#   DEFAULT  默认模式（裸 /personal_fm 的等效行为，顺着画像收敛，越听越窄）
-#   FAMILIAR 熟悉模式（偏老歌/听过的方向，最窄）
-#   EXPLORE  探索模式（主动推新内容，治"没新意"）
-#   SCENE_RCMD 场景模式（必须配 submode，如 FOCUS/RAINY/ROCK 等几十种场景）
-# 模式值来自 App 设置页，白名单校验后落盘 /data/fm_mode.txt，重启不丢。
-FM_MODES = ("DEFAULT", "FAMILIAR", "EXPLORE", "SCENE_RCMD")
+#   DEFAULT    默认模式（裸 /personal_fm 的等效行为，顺着画像收敛，越听越窄）
+#   FAMILIAR   熟悉模式（偏老歌/听过的方向，最窄）
+#   EXPLORE    探索模式（主动推新内容，治"没新意"）
+#   COMMUTE    开车模式（网易云场景模式 submode=COMMUTE 通勤/自驾）
+#   SCENE_RCMD 场景模式通用项（默认同样配 COMMUTE）
+# 模式值来自 App，白名单校验后落盘 /data/fm_mode.txt，重启不丢。
+FM_MODES = ("DEFAULT", "FAMILIAR", "EXPLORE", "COMMUTE", "SCENE_RCMD")
 DEFAULT_FM_MODE = "DEFAULT"
 
 def load_fm_mode():
@@ -281,6 +282,8 @@ def ncm_fetch_fm():
     """
     if _fm_mode == DEFAULT_FM_MODE:
         data = ncm_get("/personal_fm")
+    elif _fm_mode in ("COMMUTE", "SCENE_RCMD"):
+        data = ncm_get("/personal/fm/mode", mode="SCENE_RCMD", submode="COMMUTE", limit=3)
     else:
         data = ncm_get("/personal/fm/mode", mode=_fm_mode, limit=3)
     if data.get("code") != 200:

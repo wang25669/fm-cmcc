@@ -31,6 +31,25 @@ public class ServerPreferences {
         return !getBackendUrl().trim().isEmpty();
     }
 
+    private static final String KEY_OFFLINE_MODE = "offline_mode";
+    private static final String KEY_LAST_MODE    = "last_mode";
+
+    public boolean isOfflineMode() {
+        return p.getBoolean(KEY_OFFLINE_MODE, false);
+    }
+
+    public void setOfflineMode(boolean offline) {
+        p.edit().putBoolean(KEY_OFFLINE_MODE, offline).apply();
+    }
+
+    public String getLastMode() {
+        return p.getString(KEY_LAST_MODE, "DEFAULT");
+    }
+
+    public void setLastMode(String mode) {
+        p.edit().putString(KEY_LAST_MODE, mode).apply();
+    }
+
     // ── 环境体检的一次性开关 ────────────────────────────────────────────────
     //
     // 体检要枚举全部编解码器、查音频输出属性、读存储状态。这些结果在同一台

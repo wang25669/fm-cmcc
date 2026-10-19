@@ -26,6 +26,7 @@ import java.util.Locale;
 public class MainActivity extends AppCompatActivity {
 
     private TextView    tvTitle, tvArtist, tvStatus, tvPosition, tvDuration;
+    private TextView    btnModeDefault, btnModeExplore, btnModeDrive, btnModeOffline;
     private SeekBar     seekBar;
     private ImageButton btnPlayPause, btnNext, btnPrev, btnPlaylist, btnSettings, btnLike, btnTrash;
 
@@ -48,6 +49,7 @@ public class MainActivity extends AppCompatActivity {
         super.onResume();
         LocalBroadcastManager.getInstance(this).registerReceiver(
                 receiver, new IntentFilter(MusicService.BROADCAST_STATE));
+        updateModeButtons(ServerPreferences.get(this).getLastMode(), ServerPreferences.get(this).isOfflineMode());
 
         if (!ServerPreferences.get(this).isConfigured()) {
             startActivity(new Intent(this, SettingsActivity.class));
@@ -63,34 +65,72 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void bindViews() {
-        tvTitle      = findViewById(R.id.tv_title);
-        tvArtist     = findViewById(R.id.tv_artist);
-        tvStatus     = findViewById(R.id.tv_status);
-        tvPosition   = findViewById(R.id.tv_position);
-        tvDuration   = findViewById(R.id.tv_duration);
-        seekBar      = findViewById(R.id.seek_bar);
-        btnPlayPause = findViewById(R.id.btn_play_pause);
-        btnNext      = findViewById(R.id.btn_next);
-        btnPrev      = findViewById(R.id.btn_prev);
-        btnPlaylist  = findViewById(R.id.btn_playlist);
-        btnSettings  = findViewById(R.id.btn_settings);
-        btnLike      = findViewById(R.id.btn_like);
-        btnTrash     = findViewById(R.id.btn_trash);
+        tvTitle        = findViewById(R.id.tv_title);
+        tvArtist       = findViewById(R.id.tv_artist);
+        tvStatus       = findViewById(R.id.tv_status);
+        tvPosition     = findViewById(R.id.tv_position);
+        tvDuration     = findViewById(R.id.tv_duration);
+        seekBar        = findViewById(R.id.seek_bar);
+        btnPlayPause   = findViewById(R.id.btn_play_pause);
+        btnNext        = findViewById(R.id.btn_next);
+        btnPrev        = findViewById(R.id.btn_prev);
+        btnPlaylist    = findViewById(R.id.btn_playlist);
+        btnSettings    = findViewById(R.id.btn_settings);
+        btnLike        = findViewById(R.id.btn_like);
+        btnTrash       = findViewById(R.id.btn_trash);
+        btnModeDefault = findViewById(R.id.btn_mode_default);
+        btnModeExplore = findViewById(R.id.btn_mode_explore);
+        btnModeDrive   = findViewById(R.id.btn_mode_drive);
+        btnModeOffline = findViewById(R.id.btn_mode_offline);
     }
 
     private void setupButtons() {
-        btnPlayPause.setOnClickListener(v -> send(MusicService.ACTION_TOGGLE_PLAY));
-        btnNext.setOnClickListener(v      -> send(MusicService.ACTION_NEXT));
-        btnPrev.setOnClickListener(v      -> send(MusicService.ACTION_PREV));
-        btnSettings.setOnClickListener(v  -> startActivity(new Intent(this, SettingsActivity.class)));
-        btnPlaylist.setOnClickListener(v  -> showPlaylist());
-        btnLike.setOnClickListener(v      -> { if (hasSong) send(MusicService.ACTION_LIKE); });
-        btnTrash.setOnClickListener(v     -> { if (hasSong) send(MusicService.ACTION_TRASH); });
+        btnPlayPause.setOnClickListener(v   -> send(MusicService.ACTION_TOGGLE_PLAY));
+        btnNext.setOnClickListener(v        -> send(MusicService.ACTION_NEXT));
+        btnPrev.setOnClickListener(v        -> send(MusicService.ACTION_PREV));
+        btnSettings.setOnClickListener(v    -> startActivity(new Intent(this, SettingsActivity.class)));
+        btnPlaylist.setOnClickListener(v    -> showPlaylist());
+        btnLike.setOnClickListener(v        -> { if (hasSong) send(MusicService.ACTION_LIKE); });
+        btnTrash.setOnClickListener(v       -> { if (hasSong) send(MusicService.ACTION_TRASH); });
+        btnModeDefault.setOnClickListener(v -> sendMode("DEFAULT"));
+        btnModeExplore.setOnClickListener(v -> sendMode("EXPLORE"));
+        btnModeDrive.setOnClickListener(v   -> sendMode("COMMUTE"));
+        btnModeOffline.setOnClickListener(v -> sendMode("OFFLINE"));
+
         // 进度条只做展示，不接受拖动：三个回调全是空实现，注册它等于没注册。
         // 真要支持拖动得给 MusicService 加一个 ACTION_SEEK，这里先保持只读。
         seekBar.setEnabled(false);
         applyLikeIcon();
         applyEnabled();
+        updateModeButtons(ServerPreferences.get(this).getLastMode(), ServerPreferences.get(this).isOfflineMode());
+    }
+
+    private void sendMode(String mode) {
+        Intent i = new Intent(this, MusicService.class);
+        i.setAction(MusicService.ACTION_SET_MODE);
+        i.putExtra(MusicService.EXTRA_MODE, mode);
+        startService(i);
+    }
+
+    private void updateModeButtons(String mode, boolean isOffline) {
+        if (btnModeDefault == null) return;
+        setPillState(btnModeOffline, isOffline);
+        if (isOffline) {
+            setPillState(btnModeDefault, false);
+            setPillState(btnModeExplore, false);
+            setPillState(btnModeDrive,   false);
+        } else {
+            setPillState(btnModeDefault, "DEFAULT".equalsIgnoreCase(mode) || mode == null);
+            setPillState(btnModeExplore, "EXPLORE".equalsIgnoreCase(mode));
+            setPillState(btnModeDrive,   "COMMUTE".equalsIgnoreCase(mode) || "SCENE_RCMD".equalsIgnoreCase(mode));
+        }
+    }
+
+    private void setPillState(TextView btn, boolean selected) {
+        if (btn == null) return;
+        btn.setSelected(selected);
+        btn.setBackgroundResource(selected ? R.drawable.bg_mode_pill_selected : R.drawable.bg_mode_pill_normal);
+        btn.setTextColor(getResources().getColor(selected ? R.color.white : R.color.text_secondary));
     }
 
     private void send(String action) {
@@ -194,8 +234,12 @@ public class MainActivity extends AppCompatActivity {
             boolean playing = intent.getBooleanExtra(MusicService.EXTRA_IS_PLAYING, false);
             int     dur     = intent.getIntExtra(MusicService.EXTRA_DURATION, 0);
             int     pos     = intent.getIntExtra(MusicService.EXTRA_POSITION, 0);
-            String  songId  = intent.getStringExtra(MusicService.EXTRA_SONG_ID);
-            boolean liked   = intent.getBooleanExtra(MusicService.EXTRA_LIKED, false);
+            String  songId    = intent.getStringExtra(MusicService.EXTRA_SONG_ID);
+            boolean liked     = intent.getBooleanExtra(MusicService.EXTRA_LIKED, false);
+            String  mode      = intent.getStringExtra(MusicService.EXTRA_MODE);
+            boolean isOffline = intent.getBooleanExtra(MusicService.EXTRA_IS_OFFLINE, false);
+
+            updateModeButtons(mode, isOffline);
 
             if (title  != null && !title.isEmpty())  tvTitle.setText(title);
             if (artist != null && !artist.isEmpty())  tvArtist.setText(artist);

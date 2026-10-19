@@ -24,7 +24,19 @@ public class SongInfo {
     }
 
     public String displayName() {
-        if (artist.isEmpty()) return title;
-        return artist + " - " + title;
+        if (artist == null || artist.isEmpty()) return title != null ? title : "";
+        return artist + " - " + (title != null ? title : "");
+    }
+
+    public JSONObject toJson() {
+        JSONObject j = new JSONObject();
+        try {
+            j.put("id", id != null ? id : "");
+            j.put("title", title != null ? title : "");
+            j.put("artist", artist != null ? artist : "");
+            j.put("album", album != null ? album : "");
+            j.put("filename", filename != null ? filename : "");
+        } catch (Exception ignored) {}
+        return j;
     }
 }

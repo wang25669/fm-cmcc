@@ -33,9 +33,11 @@ public class SongCache {
     /** 缓存上限。一首 320kbps 的歌大约 10MB，500MB 差不多能存 50 首 */
     private static final long MAX_BYTES = 500L * 1024 * 1024;
 
+    private final Context ctx;
     private final File dir;
 
     public SongCache(Context ctx) {
+        this.ctx = ctx.getApplicationContext();
         File base = ctx.getExternalCacheDir();
         if (base == null) base = ctx.getCacheDir();   // SD 卡没挂载时退回内部存储
         dir = new File(base, "songs");
@@ -43,6 +45,10 @@ public class SongCache {
         dir.mkdirs();
         DebugLog.log("缓存", "歌曲缓存目录: " + dir.getAbsolutePath()
                 + " 可写=" + dir.canWrite());
+    }
+
+    public File getDir() {
+        return dir;
     }
 
     /** 某首歌在缓存里的位置。文件存不存在是另一回事，用 {@link #has} 判断 */
@@ -107,6 +113,11 @@ public class SongCache {
                 total -= size;
                 freed += size;
                 deleted++;
+                String fname = f.getName();
+                if (fname.endsWith(".mp3")) {
+                    String sid = fname.substring(0, fname.length() - 4);
+                    LocalSongStore.get(ctx).removeSong(sid);
+                }
             }
         }
         if (deleted > 0) {
