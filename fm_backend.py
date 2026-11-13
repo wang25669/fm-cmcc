@@ -29,9 +29,11 @@ OL_PASS      = os.environ.get("OL_PASSWORD",  "")
 OL_DIR       = os.environ.get("OL_MUSIC_DIR", "/移动云盘/music").rstrip("/")
 UNM_URL      = os.environ.get("UNM_URL",      "")
 UNM_ENABLED  = os.environ.get("UNM_ENABLED",  "false").lower() == "true"
+# UNM 音源优先级：优先走环境变量 UNM_SOURCES，未配置时使用实测稳定性顺序兜底
+# （msls/oi 秒级且稳，byfuns/unm/qijieya 兜底，gdmusic 备用；bikonoo/qijieyaPlus 官方 0.4.5 已归档移除）。
 UNM_SOURCES  = [s.strip() for s in os.environ.get(
     "UNM_SOURCES",
-    "gdmusic,msls,byfuns,unm,bikonoo,qijieya,qijieyaPlus"
+    "msls,oi,byfuns,unm,qijieya,ddyr,gdmusic"
 ).split(",") if s.strip()]
 UNM_SOURCE_TIMEOUT = float(os.environ.get("UNM_SOURCE_TIMEOUT", "6"))
 
