@@ -305,4 +305,88 @@ public class BackendClient {
             throw new IOException("health 失败: " + e.getMessage());
         }
     }
+
+    // ── 歌手热门单曲与点播准备 ───────────────────────────────────────────
+
+    /**
+     * 获取歌手热度排名前 20 首歌曲
+     */
+    public List<SongInfo> getArtistTopSongs(String artistId, String songId, String artistName) throws IOException {
+        StringBuilder sb = new StringBuilder(base()).append("/artist/songs?limit=20");
+        if (artistId != null && !artistId.isEmpty()) {
+            sb.append("&artist_id=").append(enc(artistId));
+        }
+        if (songId != null && !songId.isEmpty()) {
+            sb.append("&song_id=").append(enc(songId));
+        }
+        if (artistName != null && !artistName.isEmpty()) {
+            sb.append("&artist=").append(enc(artistName));
+        }
+
+        Request req = reqBuilder(sb.toString()).build();
+        try (Response resp = AppOkHttpClient.get().newCall(req).execute()) {
+            String bodyStr = resp.body() != null ? resp.body().string() : "";
+            if (!resp.isSuccessful()) {
+                throw new IOException("获取歌手热门歌曲失败 HTTP " + resp.code());
+            }
+            JSONObject j = new JSONObject(bodyStr);
+            JSONArray arr = j.optJSONArray("songs");
+            List<SongInfo> list = new ArrayList<>();
+            if (arr != null) {
+                for (int i = 0; i < arr.length(); i++) {
+                    JSONObject item = arr.optJSONObject(i);
+                    if (item != null) {
+                        list.add(SongInfo.fromJson(item));
+                    }
+                }
+            }
+            return list;
+        } catch (IOException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IOException("解析歌手歌曲失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 点播准备单首歌曲（若云盘未缓存，后端会自动现场下载上传，故使用 longPoll 长超时客户端）
+     */
+    public SongInfo prepareSong(SongInfo song) throws IOException {
+        StringBuilder sb = new StringBuilder(base()).append("/play?");
+        sb.append("id=").append(enc(song.id != null ? song.id : ""));
+        if (song.filename != null && !song.filename.isEmpty()) {
+            sb.append("&filename=").append(enc(song.filename));
+        }
+        if (song.title != null && !song.title.isEmpty()) {
+            sb.append("&title=").append(enc(song.title));
+        }
+        if (song.artist != null && !song.artist.isEmpty()) {
+            sb.append("&artist=").append(enc(song.artist));
+        }
+        if (song.artistId != null && !song.artistId.isEmpty()) {
+            sb.append("&artist_id=").append(enc(song.artistId));
+        }
+        if (song.album != null && !song.album.isEmpty()) {
+            sb.append("&album=").append(enc(song.album));
+        }
+
+        Request req = reqBuilder(sb.toString()).build();
+        try (Response resp = longPoll().newCall(req).execute()) {
+            String bodyStr = resp.body() != null ? resp.body().string() : "";
+            if (!resp.isSuccessful()) {
+                throw new IOException("准备歌曲失败 HTTP " + resp.code() + ": " + bodyStr);
+            }
+            JSONObject obj = new JSONObject(bodyStr);
+            SongInfo prepared = SongInfo.fromJson(obj);
+            if (prepared.title == null || prepared.title.isEmpty()) prepared.title = song.title;
+            if (prepared.artist == null || prepared.artist.isEmpty()) prepared.artist = song.artist;
+            if (prepared.artistId == null || prepared.artistId.isEmpty()) prepared.artistId = song.artistId;
+            if (prepared.album == null || prepared.album.isEmpty()) prepared.album = song.album;
+            return prepared;
+        } catch (IOException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IOException("解析点播响应失败: " + e.getMessage(), e);
+        }
+    }
 }

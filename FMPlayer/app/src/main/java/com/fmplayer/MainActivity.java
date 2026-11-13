@@ -5,6 +5,8 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.graphics.Color;
+import android.graphics.drawable.ColorDrawable;
 import android.os.Bundle;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -12,11 +14,13 @@ import android.widget.ImageButton;
 import android.widget.LinearLayout;
 import android.widget.SeekBar;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 
 import com.fmplayer.model.SongInfo;
+import com.fmplayer.network.BackendClient;
 import com.fmplayer.player.LocalSongStore;
 import com.fmplayer.preferences.ServerPreferences;
 import com.fmplayer.service.MusicService;
@@ -35,6 +39,9 @@ public class MainActivity extends AppCompatActivity {
     private boolean currentLiked = false;
     /** 当前是否有可操作的歌（拿到过 song_id），无歌时喜欢/不感兴趣按钮置灰。 */
     private boolean hasSong = false;
+    private String  currentSongId   = "";
+    private String  currentArtist   = "";
+    private String  currentArtistId = "";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -83,6 +90,9 @@ public class MainActivity extends AppCompatActivity {
         btnModeExplore = findViewById(R.id.btn_mode_explore);
         btnModeDrive   = findViewById(R.id.btn_mode_drive);
         btnModeOffline = findViewById(R.id.btn_mode_offline);
+
+        tvArtist.setClickable(true);
+        tvArtist.setOnClickListener(v -> showArtistTopSongs());
     }
 
     private void setupButtons() {
@@ -231,19 +241,114 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private void showArtistTopSongs() {
+        if ((currentArtist == null || currentArtist.isEmpty())
+                && (currentSongId == null || currentSongId.isEmpty())) {
+            return;
+        }
+        if (ServerPreferences.get(this).isOfflineMode()) {
+            Toast.makeText(this, "离线模式暂不支持查看歌手热门歌曲", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        final String artistDisplay = (currentArtist != null && !currentArtist.isEmpty())
+                ? currentArtist : "当前歌手";
+        final String reqArtistId = currentArtistId;
+        final String reqSongId   = currentSongId;
+        final String reqArtist   = currentArtist;
+
+        View content = LayoutInflater.from(this).inflate(R.layout.dialog_history, null);
+        TextView titleView = content.findViewById(R.id.dialog_title);
+        if (titleView != null) {
+            titleView.setText(artistDisplay + " · 热门歌曲");
+        }
+        final TextView     subtitle  = content.findViewById(R.id.dialog_subtitle);
+        final LinearLayout container = content.findViewById(R.id.list_container);
+        View               closeBtn  = content.findViewById(R.id.dialog_close);
+
+        subtitle.setText("正在加载热度排名前 20 首...");
+
+        final AlertDialog dialog = new AlertDialog.Builder(this)
+                .setView(content)
+                .create();
+
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+        }
+
+        closeBtn.setOnClickListener(v -> dialog.dismiss());
+        dialog.show();
+
+        new Thread(() -> {
+            try {
+                final List<SongInfo> songs = BackendClient.get(MainActivity.this)
+                        .getArtistTopSongs(reqArtistId, reqSongId, reqArtist);
+                runOnUiThread(() -> {
+                    if (isFinishing() || !dialog.isShowing()) return;
+                    container.removeAllViews();
+                    if (songs == null || songs.isEmpty()) {
+                        subtitle.setText("未找到该歌手的热门歌曲");
+                        return;
+                    }
+                    subtitle.setText("按热度排行前 " + songs.size() + " 首 · 点击立即插播");
+                    LayoutInflater inflater = LayoutInflater.from(MainActivity.this);
+                    for (int i = 0; i < songs.size(); i++) {
+                        final SongInfo s = songs.get(i);
+                        View item = inflater.inflate(R.layout.item_history, container, false);
+                        TextView tvIdx  = item.findViewById(R.id.tv_index);
+                        TextView tvSong = item.findViewById(R.id.tv_song);
+                        TextView tvSub  = item.findViewById(R.id.tv_sub);
+
+                        boolean isCurrent = (s.id != null && !s.id.isEmpty() && s.id.equals(currentSongId));
+                        tvIdx.setText(isCurrent ? "▶" : String.valueOf(i + 1));
+                        tvIdx.setTextColor(getResources().getColor(isCurrent ? R.color.accent : R.color.text_secondary));
+
+                        tvSong.setText(s.title != null && !s.title.isEmpty() ? s.title : s.id);
+                        tvSong.setTextColor(getResources().getColor(isCurrent ? R.color.accent : R.color.text_primary));
+
+                        String sub = (s.album != null && !s.album.isEmpty()) ? s.album : artistDisplay;
+                        tvSub.setText(sub);
+
+                        item.setOnClickListener(v -> {
+                            try {
+                                Intent playIntent = new Intent(MainActivity.this, MusicService.class);
+                                playIntent.setAction(MusicService.ACTION_PLAY_ARTIST_SONG);
+                                playIntent.putExtra(MusicService.EXTRA_SONG_JSON, s.toJson().toString());
+                                startService(playIntent);
+                            } catch (Exception ignored) {}
+                            dialog.dismiss();
+                        });
+
+                        container.addView(item);
+                    }
+                });
+            } catch (final Exception e) {
+                runOnUiThread(() -> {
+                    if (isFinishing() || !dialog.isShowing()) return;
+                    subtitle.setText("加载失败: " + e.getMessage());
+                });
+            }
+        }).start();
+    }
+
     private final BroadcastReceiver receiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context ctx, Intent intent) {
-            String  title   = intent.getStringExtra(MusicService.EXTRA_TITLE);
-            String  artist  = intent.getStringExtra(MusicService.EXTRA_ARTIST);
-            String  status  = intent.getStringExtra(MusicService.EXTRA_STATUS);
-            boolean playing = intent.getBooleanExtra(MusicService.EXTRA_IS_PLAYING, false);
-            int     dur     = intent.getIntExtra(MusicService.EXTRA_DURATION, 0);
-            int     pos     = intent.getIntExtra(MusicService.EXTRA_POSITION, 0);
+            String  title     = intent.getStringExtra(MusicService.EXTRA_TITLE);
+            String  artist    = intent.getStringExtra(MusicService.EXTRA_ARTIST);
+            String  artistId  = intent.getStringExtra(MusicService.EXTRA_ARTIST_ID);
+            String  status    = intent.getStringExtra(MusicService.EXTRA_STATUS);
+            boolean playing   = intent.getBooleanExtra(MusicService.EXTRA_IS_PLAYING, false);
+            int     dur       = intent.getIntExtra(MusicService.EXTRA_DURATION, 0);
+            int     pos       = intent.getIntExtra(MusicService.EXTRA_POSITION, 0);
             String  songId    = intent.getStringExtra(MusicService.EXTRA_SONG_ID);
             boolean liked     = intent.getBooleanExtra(MusicService.EXTRA_LIKED, false);
             String  mode      = intent.getStringExtra(MusicService.EXTRA_MODE);
             boolean isOffline = intent.getBooleanExtra(MusicService.EXTRA_IS_OFFLINE, false);
+
+            currentSongId   = songId != null ? songId : "";
+            currentArtist   = artist != null ? artist : "";
+            currentArtistId = artistId != null ? artistId : "";
 
             updateModeButtons(mode, isOffline);
 
@@ -254,7 +359,7 @@ public class MainActivity extends AppCompatActivity {
             }
 
             if (artist != null && !artist.isEmpty() && !LocalSongStore.isGarbage(artist)) {
-                tvArtist.setText(artist);
+                tvArtist.setText(!isOffline ? (artist + " ›") : artist);
             } else {
                 tvArtist.setText(isOffline ? "本地音乐" : "");
             }

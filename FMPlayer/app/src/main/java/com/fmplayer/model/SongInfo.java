@@ -6,6 +6,7 @@ public class SongInfo {
     public String id;
     public String title;
     public String artist;
+    public String artistId = "";
     public String album;
     public String streamUrl;
     public String filename;
@@ -17,6 +18,7 @@ public class SongInfo {
         s.id          = j.optString("id",         "");
         s.title       = j.optString("title",      "");
         s.artist      = j.optString("artist",     "");
+        s.artistId    = j.optString("artist_id",  "");
         s.album       = j.optString("album",      "");
         s.streamUrl   = j.optString("stream_url", "");
         s.filename    = j.optString("filename",   "");
@@ -34,6 +36,7 @@ public class SongInfo {
             j.put("id", id != null ? id : "");
             j.put("title", title != null ? title : "");
             j.put("artist", artist != null ? artist : "");
+            j.put("artist_id", artistId != null ? artistId : "");
             j.put("album", album != null ? album : "");
             j.put("filename", filename != null ? filename : "");
         } catch (Exception ignored) {}
