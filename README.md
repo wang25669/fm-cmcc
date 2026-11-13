@@ -283,8 +283,8 @@ A: 一次 7 分钟播放约 20KB，满负荷一个月约 120MB。缓存另算，
 
 ## 九、开发与出包
 
-- 编译需要 **JDK 17 + Android SDK**（AGP 8.7.3）。本仓库没有测试、没有 lint 配置。
-- 不想配环境就直接推 GitHub：push 到 `main` 触发 CI，约 1 分钟出包并发 Release。
+- **严禁在本地执行 Gradle 编译或探测**：宿主机/开发环境未配置 Android SDK，**绝对禁止在本地运行 `./gradlew` 或任何本地构建命令**（执行会自动拉取几百兆的 Gradle Wrapper 缓存并常驻后台 Daemon 进程，徒增内存与磁盘消耗）。**所有 APK 编译出包统一且必须交由 GitHub Actions 远端完成**。
+- **CI 自动化出包**：push 或提交 PR 后触发 GitHub Actions 编译（约 1 分钟出包），构建成功后会自动把带有签名的 `.apk` 发布到 GitHub Releases。
 - 版本号由 CI 改写：`versionCode = git rev-list --count HEAD`，`versionName` 取 tag（无 tag 时 `0.0.<commitCount>`）。`build.gradle` 里那两行必须保持"关键字 + 空格 + 值"的单行写法，否则 `sed` 静默替换失败。
 - 改 Android 代码时注意：横竖屏两套布局的控件 id 必须完全一致；不要加 multidex；依赖版本钉死（`okhttp 3.12.13`、`androidx.media 1.4.3`）；UI 只用 API 16/17 验证过的写法。
 - 代码注释、UI 文案、日志、提交信息全部中文。
