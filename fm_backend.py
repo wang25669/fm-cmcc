@@ -373,13 +373,15 @@ def ncm_fetch_fm(client_id):
 
     songs = []
     for item in data.get("data") or []:
-        artists = item.get("artists") or []
-        album   = item.get("album") or {}
+        artists  = item.get("artists") or item.get("ar") or []
+        album    = item.get("album") or item.get("al") or {}
+        first_ar = artists[0] if artists else {}
         songs.append({
-            "id":      str(item["id"]),
-            "title":   item.get("name", ""),
-            "artist":  artists[0].get("name", "") if artists else "",
-            "album":   album.get("name", ""),
+            "id":        str(item["id"]),
+            "title":     item.get("name", ""),
+            "artist":    first_ar.get("name", "") if artists else "",
+            "artist_id": str(first_ar.get("id", "")) if first_ar.get("id") else "",
+            "album":     album.get("name", ""),
         })
     return songs
 
@@ -676,12 +678,14 @@ def parse_filename_meta(filename, song_id):
         return {
             "id": str(song_id),
             "artist": parts[0].strip(),
+            "artist_id": "",
             "title": parts[1].strip(),
             "album": ""
         }
     return {
         "id": str(song_id),
         "artist": "",
+        "artist_id": "",
         "title": name.strip(),
         "album": ""
     }
@@ -723,13 +727,16 @@ def songs_batch_info():
                         sid = str(item.get("id"))
                         name = item.get("name", "")
                         ars = item.get("ar") or item.get("artists") or []
-                        ar_name = ars[0].get("name", "") if ars else ""
+                        first_ar = ars[0] if ars else {}
+                        ar_name = first_ar.get("name", "")
+                        ar_id = str(first_ar.get("id", "")) if first_ar.get("id") else ""
                         al = item.get("al") or item.get("album") or {}
                         al_name = al.get("name", "")
                         result_map[sid] = {
                             "id": sid,
                             "title": name,
                             "artist": ar_name,
+                            "artist_id": ar_id,
                             "album": al_name
                         }
             except Exception as e:
@@ -740,30 +747,152 @@ def songs_batch_info():
         if sid in result_map:
             songs.append(result_map[sid])
         else:
-            songs.append({"id": sid, "title": f"本地歌曲 {sid}", "artist": "", "album": ""})
+            songs.append({"id": sid, "title": f"本地歌曲 {sid}", "artist": "", "artist_id": "", "album": ""})
 
     return jsonify({"ok": True, "songs": songs})
 
 @app.route("/play")
 def play():
-    """点播历史歌曲：实时取新鲜直链"""
-    filename = request.args.get("filename", "").strip()
-    song_id  = request.args.get("id", "").strip()
-    if not filename:
-        return jsonify({"error": "filename 参数不能为空"}), 400
+    """点播/准备歌曲：若云盘已存在则直接返回直链；若未存在则按需下载上传至云盘"""
+    cid       = get_client_id(request)
+    cookie    = get_user_cookie(cid)
+    filename  = request.args.get("filename", "").strip()
+    song_id   = request.args.get("id", "").strip()
+    title     = request.args.get("title", "").strip()
+    artist    = request.args.get("artist", "").strip()
+    artist_id = request.args.get("artist_id", "").strip()
+    album     = request.args.get("album", "").strip()
+
+    if not filename and song_id:
+        filename = find_existing_filename(song_id) or ""
+
+    # 情况 1：网盘中已存在该文件，直接拿新鲜直链秒回
+    if filename:
+        try:
+            url = ol_get_url(filename)
+            meta = parse_filename_meta(filename, song_id)
+            return jsonify({
+                "id":         song_id or meta.get("id", ""),
+                "title":      title or meta.get("title", ""),
+                "artist":     artist or meta.get("artist", ""),
+                "artist_id":  artist_id,
+                "album":      album or meta.get("album", ""),
+                "stream_url": url,
+                "filename":   filename,
+            })
+        except Exception as e:
+            print(f"[play] [{cid}] 获取直链失败 filename={filename}: {e}", flush=True)
+
+    # 情况 2：网盘中尚未缓存（如点播歌手热门新歌），现场走下载+上传流程
+    if not song_id:
+        return jsonify({"error": "未找到对应文件，请提供 filename 或 id"}), 400
+
+    if not title or not artist:
+        try:
+            data = ncm_get("/song/detail", cookie=cookie, ids=song_id)
+            songs_data = data.get("songs") or []
+            if songs_data:
+                s0 = songs_data[0]
+                ars = s0.get("ar") or s0.get("artists") or []
+                al  = s0.get("al") or s0.get("album") or {}
+                first_ar = ars[0] if ars else {}
+                title     = title or s0.get("name", "")
+                artist    = artist or first_ar.get("name", "")
+                artist_id = artist_id or (str(first_ar.get("id", "")) if first_ar.get("id") else "")
+                album     = album or al.get("name", "")
+        except Exception as e:
+            print(f"[play] [{cid}] 补全歌曲详情失败 id={song_id}: {e}", flush=True)
+
+    song_obj = {
+        "id":        song_id,
+        "title":     title or song_id,
+        "artist":    artist or "未知歌手",
+        "artist_id": artist_id,
+        "album":     album,
+    }
     try:
-        url = ol_get_url(filename)
-        return jsonify({"stream_url": url})
+        res = ensure_and_get_url(song_obj, cookie=cookie)
+        if not res or not res.get("stream_url"):
+            return jsonify({"error": f"歌曲准备失败：{song_obj['title']}"}), 500
+        return jsonify(res)
     except Exception as e:
-        if song_id:
-            new_filename = find_existing_filename(song_id)
-            if new_filename:
-                try:
-                    url = ol_get_url(new_filename)
-                    return jsonify({"stream_url": url, "filename": new_filename})
-                except Exception as e2:
-                    return jsonify({"error": str(e2)}), 500
-        return jsonify({"error": str(e)}), 500
+        print(f"[play] [{cid}] 歌曲现场准备异常 id={song_id}: {e}", flush=True)
+        return jsonify({"error": f"歌曲准备异常: {e}"}), 500
+
+
+@app.route("/artist/songs")
+def artist_top_songs():
+    """获取歌手按热度排序的前 N 首歌曲（默认前 20 首）"""
+    cid         = get_client_id(request)
+    cookie      = get_user_cookie(cid)
+    artist_id   = request.args.get("artist_id", "").strip()
+    song_id     = request.args.get("song_id", "").strip()
+    artist_name = request.args.get("artist", "").strip()
+    try:
+        limit = max(1, min(50, int(request.args.get("limit", "20"))))
+    except Exception:
+        limit = 20
+
+    # 兜底 1：如果没有 artist_id，通过 song_id 反查主歌手 ID
+    if not artist_id and song_id:
+        try:
+            data = ncm_get("/song/detail", cookie=cookie, ids=song_id)
+            songs_data = data.get("songs") or []
+            if songs_data:
+                s0 = songs_data[0]
+                ars = s0.get("ar") or s0.get("artists") or []
+                if ars and ars[0].get("id"):
+                    artist_id = str(ars[0]["id"])
+                    if not artist_name:
+                        artist_name = ars[0].get("name", "")
+        except Exception as e:
+            print(f"[artist_songs] [{cid}] 通过 song_id={song_id} 反查歌手失败: {e}", flush=True)
+
+    # 兜底 2：通过歌手名字搜索歌手 ID
+    if not artist_id and artist_name:
+        try:
+            data = ncm_get("/cloudsearch", cookie=cookie, keywords=artist_name, type=100, limit=1)
+            artists = (data.get("result") or {}).get("artists") or []
+            if artists and artists[0].get("id"):
+                artist_id = str(artists[0]["id"])
+        except Exception as e:
+            print(f"[artist_songs] [{cid}] 搜索歌手 {artist_name} 失败: {e}", flush=True)
+
+    if not artist_id:
+        return jsonify({"ok": False, "error": "无法解析歌手 ID"}), 400
+
+    try:
+        data = ncm_get("/artist/top/song", cookie=cookie, id=artist_id)
+        if data.get("code") != 200:
+            return jsonify({"ok": False, "error": f"获取歌手热门歌曲失败 code={data.get('code')}"}), 500
+
+        raw_songs = (data.get("songs") or [])[:limit]
+        songs = []
+        for item in raw_songs:
+            sid = str(item.get("id", ""))
+            if not sid:
+                continue
+            ars = item.get("ar") or item.get("artists") or []
+            al  = item.get("al") or item.get("album") or {}
+            first_ar = ars[0] if ars else {}
+            fname = find_existing_filename(sid)
+            songs.append({
+                "id":        sid,
+                "title":     item.get("name", ""),
+                "artist":    first_ar.get("name", "") or artist_name,
+                "artist_id": str(first_ar.get("id", "")) if first_ar.get("id") else artist_id,
+                "album":     al.get("name", ""),
+                "filename":  fname or "",
+            })
+        return jsonify({
+            "ok":        True,
+            "artist_id": artist_id,
+            "artist":    artist_name,
+            "songs":     songs,
+        })
+    except Exception as e:
+        print(f"[artist_songs] [{cid}] 获取歌手热门歌曲异常 artist_id={artist_id}: {e}", flush=True)
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 @app.route("/auth/qr")
 def auth_qr():

@@ -29,6 +29,8 @@ import com.fmplayer.player.LocalSongStore;
 import com.fmplayer.player.SongCache;
 import com.fmplayer.preferences.ServerPreferences;
 
+import org.json.JSONObject;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -49,9 +51,12 @@ public class MusicService extends Service {
     public static final String ACTION_TRASH       = "com.fmplayer.TRASH";  // 当前歌丢垃圾桶并跳下一首
     public static final String ACTION_SET_MODE    = "com.fmplayer.SET_MODE"; // 切换播放模式
     public static final String ACTION_RESET_SESSION = "com.fmplayer.RESET_SESSION"; // 扫码换号后重置本地播放会话
+    public static final String ACTION_PLAY_ARTIST_SONG = "com.fmplayer.PLAY_ARTIST_SONG"; // 点播歌手热门单曲
     public static final String EXTRA_HISTORY_IDX  = "history_idx";
     public static final String EXTRA_MODE         = "fm_mode";
     public static final String EXTRA_IS_OFFLINE   = "is_offline";
+    public static final String EXTRA_ARTIST_ID    = "artist_id";
+    public static final String EXTRA_SONG_JSON    = "song_json";
 
     public static final String BROADCAST_STATE  = "com.fmplayer.STATE_CHANGED";
     public static final String EXTRA_TITLE      = "title";
@@ -135,7 +140,10 @@ public class MusicService extends Service {
     private static final int   MAX_DECODER_FAIL_STREAK = 3;
 
     private final Handler      handler     = new Handler();
-    private final ExecutorService executor  = Executors.newSingleThreadExecutor();
+    // 主执行器：专门执行立即播放、切歌、歌手点播等前台操作
+    private final ExecutorService executor   = Executors.newSingleThreadExecutor();
+    // 后台执行器：专门执行下一首预取、红心/垃圾桶回传、历史元数据拉取，绝不阻塞前台操作
+    private final ExecutorService bgExecutor = Executors.newSingleThreadExecutor();
 
     /**
      * 播放代次计数器。每次真正切换到一首新歌（playLocal被调用）就自增一次。
@@ -174,14 +182,14 @@ public class MusicService extends Service {
         // 装了新版本会自动再跑一遍——改了播放逻辑之后手上得有一份新的环境记录。
         runDiagThisLaunch = ServerPreferences.get(this).shouldRunDiagnostics(this);
         if (runDiagThisLaunch) {
-            executor.submit(() -> Diagnostics.logLocalEnvironment(MusicService.this));
+            bgExecutor.submit(() -> Diagnostics.logLocalEnvironment(MusicService.this));
         }
 
         currentFmMode = ServerPreferences.get(this).getLastMode();
         isOfflineMode = ServerPreferences.get(this).isOfflineMode();
 
         // 后台扫描本地缓存，补全本地歌曲索引（兼容既有的 500MB 文件）并刷新离线播放列表
-        executor.submit(() -> {
+        bgExecutor.submit(() -> {
             refreshOfflinePlaylist();
             if (ServerPreferences.get(MusicService.this).isConfigured()) {
                 // 检查是否有缺失元数据的本地歌曲，批量向后端拉取并修复
@@ -247,6 +255,10 @@ public class MusicService extends Service {
                     decoderFailStreak = 0;
                     handleResetSession();
                     break;
+                case ACTION_PLAY_ARTIST_SONG:
+                    decoderFailStreak = 0;
+                    playArtistSong(intent.getStringExtra(EXTRA_SONG_JSON));
+                    break;
             }
         }
         return START_STICKY;
@@ -258,6 +270,7 @@ public class MusicService extends Service {
     public void onDestroy() {
         handler.removeCallbacksAndMessages(null);
         executor.shutdownNow();
+        bgExecutor.shutdownNow();
         if (localPlayer != null) { localPlayer.release(); localPlayer = null; }
         if (mediaSession != null) { mediaSession.setActive(false); mediaSession.release(); }
         super.onDestroy();
@@ -510,6 +523,54 @@ public class MusicService extends Service {
         }
     }
 
+    private void playArtistSong(String songJson) {
+        if (songJson == null || songJson.isEmpty()) return;
+        final SongInfo target;
+        try {
+            target = SongInfo.fromJson(new JSONObject(songJson));
+        } catch (Exception e) {
+            DebugLog.log("playArtistSong", "解析点播歌曲失败: " + e.getMessage());
+            return;
+        }
+        if (target.id == null || target.id.isEmpty()) return;
+
+        // 如果在离线模式下点播在线歌手热门歌曲，自动切回在线模式
+        if (isOfflineMode) {
+            isOfflineMode = false;
+            ServerPreferences.get(this).setOfflineMode(false);
+        }
+
+        final int myGeneration = ++playGeneration;
+        broadcast("正在准备: " + (target.title != null && !target.title.isEmpty() ? target.title : target.id) + "...");
+
+        executor.submit(() -> {
+            try {
+                SongInfo prepared = BackendClient.get(this).prepareSong(target);
+                handler.post(() -> {
+                    if (myGeneration != playGeneration) {
+                        DebugLog.log("playArtistSong", "playArtistSong 已过期，丢弃: " + prepared.title);
+                        return;
+                    }
+                    synchronized (SESSION_HISTORY) {
+                        // 插入到当前播放位置之后；若后面已有预取好的私人 FM 歌曲，会自动顺延到下一首
+                        int insertIdx = (currentIndex >= 0 && currentIndex < SESSION_HISTORY.size())
+                                ? currentIndex + 1 : SESSION_HISTORY.size();
+                        SESSION_HISTORY.add(insertIdx, prepared);
+                        currentIndex = insertIdx;
+                    }
+                    playLocal(prepared);
+                });
+            } catch (Exception e) {
+                DebugLog.log("playArtistSong", "playArtistSong 失败: " + e.getMessage());
+                handler.post(() -> {
+                    if (myGeneration == playGeneration) {
+                        broadcast("点播失败: " + e.getMessage());
+                    }
+                });
+            }
+        });
+    }
+
     private void handleSetMode(String mode) {
         if (mode == null || mode.isEmpty()) return;
 
@@ -555,7 +616,7 @@ public class MusicService extends Service {
             }
         }
 
-        executor.submit(() -> {
+        bgExecutor.submit(() -> {
             try {
                 BackendClient.get(MusicService.this).setMode(mode);
                 DebugLog.log("mode", "后端模式已更新为: " + mode);
@@ -686,7 +747,8 @@ public class MusicService extends Service {
         final int  myGeneration = playGeneration;
         final String requestMode = currentFmMode;
 
-        executor.submit(() -> {
+        ExecutorService targetExec = playNow ? executor : bgExecutor;
+        targetExec.submit(() -> {
             SongInfo fetched = null;
             Exception error   = null;
             try {
@@ -803,7 +865,7 @@ public class MusicService extends Service {
         if (currentSong != null) {
             final String id   = currentSong.id;
             final int    secs = (int) (enginePosition() / 1000);
-            executor.submit(() -> BackendClient.get(MusicService.this).played(id, secs));
+            bgExecutor.submit(() -> BackendClient.get(MusicService.this).played(id, secs));
         }
         goNext();
     }
@@ -826,7 +888,7 @@ public class MusicService extends Service {
         }
 
         final int myGeneration = playGeneration;
-        executor.submit(() -> {
+        bgExecutor.submit(() -> {
             boolean ok = false;
             String  err = null;
             try {
@@ -859,7 +921,7 @@ public class MusicService extends Service {
         final String sid = song.id;
         broadcast("已加入不感兴趣");
         if (!isOfflineMode) {
-            executor.submit(() -> {
+            bgExecutor.submit(() -> {
                 try {
                     BackendClient.get(MusicService.this).trash(sid);
                 } catch (Exception e) {
@@ -893,6 +955,7 @@ public class MusicService extends Service {
         Intent i = new Intent(BROADCAST_STATE);
         i.putExtra(EXTRA_TITLE,      currentSong != null ? currentSong.title   : "");
         i.putExtra(EXTRA_ARTIST,     currentSong != null ? currentSong.artist  : "");
+        i.putExtra(EXTRA_ARTIST_ID,  currentSong != null && currentSong.artistId != null ? currentSong.artistId : "");
         i.putExtra(EXTRA_IS_PLAYING, enginePlaying());
         i.putExtra(EXTRA_DURATION,   (int) engineDuration());
         i.putExtra(EXTRA_POSITION,   (int) enginePosition());
